@@ -30,9 +30,10 @@ type NodeGroupUpgradePolicySpec struct {
 	// The following markers will use OpenAPI v3 schema to validate the value
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
-	// foo is an example field of NodeGroupUpgradePolicy. Edit nodegroupupgradepolicy_types.go to remove/update
-	// +optional
-	Foo *string `json:"foo,omitempty"`
+	ClusterName   string `json:"clusterName"`
+	NodeGroupName string `json:"nodeGroupName"`
+	CheckInterval string `json:"checkInterval"` // e.g., "24h"
+	AutoUpgrade   bool   `json:"autoUpgrade"`
 }
 
 // NodeGroupUpgradePolicyStatus defines the observed state of NodeGroupUpgradePolicy.
@@ -56,6 +57,12 @@ type NodeGroupUpgradePolicyStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	LastChecked   metav1.Time `json:"lastChecked,omitempty"`
+	CurrentAmi    string      `json:"currentAmi,omitempty"`
+	TargetAmi     string      `json:"targetAmi,omitempty"`
+	UpgradeStatus string      `json:"upgradeStatus,omitempty"` // InProgress, Succeeded, Failed
+
 }
 
 // +kubebuilder:object:root=true
