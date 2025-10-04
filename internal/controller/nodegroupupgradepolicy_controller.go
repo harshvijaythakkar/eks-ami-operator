@@ -24,7 +24,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
 	eksv1alpha1 "github.com/harshvijaythakkar/eks-ami-operator/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // NodeGroupUpgradePolicyReconciler reconciles a NodeGroupUpgradePolicy object
@@ -47,11 +53,58 @@ type NodeGroupUpgradePolicyReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.22.1/pkg/reconcile
 func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	logger := logf.FromContext(ctx)
 
 	// TODO(user): your logic here
 
-	return ctrl.Result{}, nil
+	// Fetch the NodeGroupUpgradePolicy resource
+	var policy eksv1alpha1.NodeGroupUpgradePolicy
+	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Load AWS configuration (uses default credentials chain — can be IRSA in-cluster)
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		logger.Error(err, "unable to load AWS config")
+		return ctrl.Result{}, err
+	}
+
+	// Create AWS service clients
+	eksClient := eks.NewFromConfig(cfg)
+	ec2Client := ec2.NewFromConfig(cfg)
+
+	// Describe the node group to get current AMI and other metadata
+	ngOutput, err := eksClient.DescribeNodegroup(ctx, &eks.DescribeNodegroupInput{
+		ClusterName:   &policy.Spec.ClusterName,
+		NodegroupName: &policy.Spec.NodeGroupName,
+	})
+
+	if err != nil {
+		logger.Error(err, "failed to describe node group")
+		return ctrl.Result{}, err
+	}
+
+	// Extract current AMI type (for managed node groups, this is usually an enum like AL2_x86_64)
+	currentAmi := ngOutput.Nodegroup.AmiType
+
+	// TODO: Fetch latest recommended AMI for the cluster version
+	// TODO: Compare currentAmi with latest recommended AMI
+	// TODO: If outdated and AutoUpgrade is true, trigger UpdateNodegroupVersion
+	// TODO: Update CR status and Conditions
+
+	// Update status with current AMI and timestamp
+	policy.Status.LastChecked = metav1.Now()
+	policy.Status.CurrentAmi = string(currentAmi)
+
+	// Save status update to Kubernetes
+	if err := r.Status().Update(ctx, &policy); err != nil {
+		logger.Error(err, "failed to update status")
+		return ctrl.Result{}, err
+	}
+
+	// Requeue after specified interval (e.g., 24h) to re-check AMI compliance
+	return ctrl.Result{RequeueAfter: time.Hour * 24}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
