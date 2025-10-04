@@ -1,0 +1,9 @@
+apiVersion: eks.aws.harsh.dev/v1alpha1
+kind: NodeGroupUpgradePolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: eks-ami-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: nodegroupupgradepolicy-sample
+spec:
+  # TODO(user): Add fields here
