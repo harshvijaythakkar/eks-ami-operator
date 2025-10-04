@@ -26,11 +26,18 @@ import (
 
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/eks/types"
 	eksv1alpha1 "github.com/harshvijaythakkar/eks-ami-operator/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"fmt"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
 // NodeGroupUpgradePolicyReconciler reconciles a NodeGroupUpgradePolicy object
@@ -73,6 +80,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	// Create AWS service clients
 	eksClient := eks.NewFromConfig(cfg)
 	ec2Client := ec2.NewFromConfig(cfg)
+	ssmClient := ssm.NewFromConfig(cfg)
 
 	// Describe the node group to get current AMI and other metadata
 	ngOutput, err := eksClient.DescribeNodegroup(ctx, &eks.DescribeNodegroupInput{
@@ -88,10 +96,74 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	// Extract current AMI type (for managed node groups, this is usually an enum like AL2_x86_64)
 	currentAmi := ngOutput.Nodegroup.AmiType
 
-	// TODO: Fetch latest recommended AMI for the cluster version
-	// TODO: Compare currentAmi with latest recommended AMI
-	// TODO: If outdated and AutoUpgrade is true, trigger UpdateNodegroupVersion
-	// TODO: Update CR status and Conditions
+	// Fetch latest recommended AMI for the cluster version
+	// Step 1: Get EKS cluster version
+	clusterOutput, err := eksClient.DescribeCluster(ctx, &eks.DescribeClusterInput{
+		Name: &policy.Spec.ClusterName,
+	})
+	if err != nil {
+		logger.Error(err, "failed to describe EKS cluster")
+		return ctrl.Result{}, err
+	}
+
+	eksVersion := *clusterOutput.Cluster.Version
+	eksVersion = strings.TrimPrefix(eksVersion, "v") // SSM expects version without 'v'
+
+	// Step 2: Build SSM parameter path
+	ssmParam := fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended/image_id", eksVersion)
+
+	// Step 3: Fetch latest recommended AMI from SSM
+	ssmOutput, err := ssmClient.GetParameter(ctx, &ssm.GetParameterInput{
+		Name:           &ssmParam,
+		WithDecryption: aws.Bool(false),
+	})
+
+	if err != nil {
+		logger.Error(err, "failed to get recommended AMI from SSM")
+		return ctrl.Result{}, err
+	}
+
+	latestAmi := *ssmOutput.Parameter.Value
+
+	// Compare currentAmi with latest recommended AMI
+	currentAmiStr := types.AMITypes(latestAmi)
+	if currentAmi != currentAmiStr {
+		logger.Info("AMI mismatch detected", "currentAmi", currentAmiStr, "latestAmi", latestAmi)
+
+		policy.Status.TargetAmi = latestAmi
+
+		// If outdated and AutoUpgrade is true, trigger UpdateNodegroupVersion
+		if policy.Spec.AutoUpgrade {
+			logger.Info("AutoUpgrade is enabled, initiating node group update")
+
+			// Trigger node group update to latest AMI version
+			_, err := eksClient.UpdateNodegroupVersion(ctx, &eks.UpdateNodegroupVersionInput{
+				ClusterName:   &policy.Spec.ClusterName,
+				NodegroupName: &policy.Spec.NodeGroupName,
+				// No need to specify AMI directly; AWS will use latest recommended AMI
+			})
+
+			if err != nil {
+				logger.Error(err, "failed to initiate node group update")
+				policy.Status.UpgradeStatus = "Failed"
+				SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UpgradeFailed", "Failed to upgrade node group to latest AMI.")
+			} else {
+				policy.Status.UpgradeStatus = "InProgress"
+			}
+		} else {
+			logger.Info("AutoUpgrade is disabled, skipping update")
+			policy.Status.UpgradeStatus = "Outdated"
+			SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionFalse, "OutdatedAMI", "Node group is using an outdated AMI.")
+		}
+	} else {
+		logger.Info("Node group is using the latest AMI", "ami", currentAmiStr)
+		policy.Status.TargetAmi = latestAmi
+		policy.Status.UpgradeStatus = "Succeeded"
+		SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeSucceeded", "Node group upgrade completed successfully.")
+	}
+
+	// Update CR status and Conditions
+	SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpToDate", "Node group is using the latest recommended AMI.")
 
 	// Update status with current AMI and timestamp
 	policy.Status.LastChecked = metav1.Now()
@@ -104,7 +176,12 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	// Requeue after specified interval (e.g., 24h) to re-check AMI compliance
-	return ctrl.Result{RequeueAfter: time.Hour * 24}, nil
+	interval, err := time.ParseDuration(policy.Spec.CheckInterval)
+	if err != nil {
+		logger.Error(err, "invalid checkInterval format, defaulting to 24h")
+		interval = 24 * time.Hour
+	}
+	return ctrl.Result{RequeueAfter: interval}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
