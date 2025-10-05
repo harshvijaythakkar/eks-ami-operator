@@ -28,7 +28,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/eks/types"
 	eksv1alpha1 "github.com/harshvijaythakkar/eks-ami-operator/api/v1alpha1"
@@ -38,6 +37,8 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+
+	"github.com/harshvijaythakkar/eks-ami-operator/internal/metrics"
 )
 
 // NodeGroupUpgradePolicyReconciler reconciles a NodeGroupUpgradePolicy object
@@ -79,7 +80,6 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 
 	// Create AWS service clients
 	eksClient := eks.NewFromConfig(cfg)
-	ec2Client := ec2.NewFromConfig(cfg)
 	ssmClient := ssm.NewFromConfig(cfg)
 
 	// Describe the node group to get current AMI and other metadata
@@ -125,10 +125,19 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 
 	latestAmi := *ssmOutput.Parameter.Value
 
+	now := float64(time.Now().Unix())
+	metrics.LastCheckedTimestamp.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(now)
+
+	// Reset outdated count for this cluster at the start of reconciliation
+	metrics.OutdatedNodeGroups.WithLabelValues(policy.Spec.ClusterName).Set(0)
+
 	// Compare currentAmi with latest recommended AMI
 	currentAmiStr := types.AMITypes(latestAmi)
 	if currentAmi != currentAmiStr {
 		logger.Info("AMI mismatch detected", "currentAmi", currentAmiStr, "latestAmi", latestAmi)
+
+		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
+		metrics.OutdatedNodeGroups.WithLabelValues(policy.Spec.ClusterName).Inc()
 
 		policy.Status.TargetAmi = latestAmi
 
@@ -147,16 +156,24 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 				logger.Error(err, "failed to initiate node group update")
 				policy.Status.UpgradeStatus = "Failed"
 				SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UpgradeFailed", "Failed to upgrade node group to latest AMI.")
+				// Metric for failed upgrade attempt
+				metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "failed").Inc()
+
 			} else {
 				policy.Status.UpgradeStatus = "InProgress"
+				SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeInitiated", "Upgrade to latest AMI initiated.")
+				// Metric for successful upgrade initiation
+				metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "success").Inc()
 			}
 		} else {
 			logger.Info("AutoUpgrade is disabled, skipping update")
+			metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "skipped").Inc()
 			policy.Status.UpgradeStatus = "Outdated"
 			SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionFalse, "OutdatedAMI", "Node group is using an outdated AMI.")
 		}
 	} else {
 		logger.Info("Node group is using the latest AMI", "ami", currentAmiStr)
+		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(1)
 		policy.Status.TargetAmi = latestAmi
 		policy.Status.UpgradeStatus = "Succeeded"
 		SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeSucceeded", "Node group upgrade completed successfully.")
