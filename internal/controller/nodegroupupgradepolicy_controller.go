@@ -20,9 +20,12 @@ import (
 	"context"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	corev1 "k8s.io/api/core/v1"
 
 	"time"
 
@@ -45,6 +48,7 @@ import (
 type NodeGroupUpgradePolicyReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=eks.aws.harsh.dev,resources=nodegroupupgradepolicies,verbs=get;list;watch;create;update;patch;delete
@@ -63,12 +67,44 @@ type NodeGroupUpgradePolicyReconciler struct {
 func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	const nodeGroupFinalizer = "nodegroupupgradepolicy.eks.aws.harsh.dev/finalizer"
 
 	// Fetch the NodeGroupUpgradePolicy resource
 	var policy eksv1alpha1.NodeGroupUpgradePolicy
 	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Handle deletion and finalizer cleanup
+	if !policy.ObjectMeta.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&policy, nodeGroupFinalizer) {
+			logger.Info("Handling finalizer cleanup for NodeGroupUpgradePolicy")
+
+			// Emit metric
+			metrics.DeletedPolicies.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Inc()
+
+			// Emit Kubernetes event
+			r.Recorder.Event(&policy, corev1.EventTypeNormal, "FinalizerCleanup", "Cleanup completed before deletion")
+
+			// Log audit info
+			logger.Info("Finalizer cleanup completed", "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
+
+			controllerutil.RemoveFinalizer(&policy, nodeGroupFinalizer)
+			if err := r.Update(ctx, &policy); err != nil {
+				logger.Error(err, "failed to remove finalizer")
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Add finalizer if not present
+	if !controllerutil.ContainsFinalizer(&policy, nodeGroupFinalizer) {
+		controllerutil.AddFinalizer(&policy, nodeGroupFinalizer)
+		if err := r.Update(ctx, &policy); err != nil {
+			logger.Error(err, "failed to add finalizer")
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Load AWS configuration (uses default credentials chain — can be IRSA in-cluster)
@@ -203,6 +239,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *NodeGroupUpgradePolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorderFor("nodegroupupgradepolicy-controller")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&eksv1alpha1.NodeGroupUpgradePolicy{}).
 		Named("nodegroupupgradepolicy").

@@ -8,13 +8,12 @@ import (
 var (
 	// Total number of node groups using outdated AMIs
 	OutdatedNodeGroups = prometheus.NewGaugeVec(
-        prometheus.GaugeOpts{
-            Name: "eks_nodegroup_outdated_total",
-            Help: "Number of node groups that are not using the latest AMI per cluster",
-        },
-        []string{"cluster"}, // 👈 This enables label support
-    )
-
+		prometheus.GaugeOpts{
+			Name: "eks_nodegroup_outdated_total",
+			Help: "Number of node groups that are not using the latest AMI per cluster",
+		},
+		[]string{"cluster"}, // 👈 This enables label support
+	)
 
 	// Total number of upgrade attempts, labeled by cluster, nodegroup, and status
 	UpgradeAttempts = prometheus.NewCounterVec(
@@ -42,6 +41,14 @@ var (
 		},
 		[]string{"cluster", "nodegroup"},
 	)
+
+	DeletedPolicies = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "eks_nodegroup_deleted_policies_total",
+			Help: "Total number of NodeGroupUpgradePolicy resources deleted",
+		},
+		[]string{"cluster", "nodegroup"},
+	)
 )
 
 func init() {
@@ -50,5 +57,6 @@ func init() {
 		UpgradeAttempts,
 		ComplianceStatus,
 		LastCheckedTimestamp,
+		DeletedPolicies,
 	)
 }
