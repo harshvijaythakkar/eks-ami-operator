@@ -246,6 +246,11 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *NodeGroupUpgradePolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	logger := logf.Log.WithName("SetupWithManager")
+	go func() {
+		<-mgr.Elected()
+		logger.Info("This operator instance has become the leader")
+	}()
 	r.Recorder = mgr.GetEventRecorderFor("nodegroupupgradepolicy-controller")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&eksv1alpha1.NodeGroupUpgradePolicy{}).
