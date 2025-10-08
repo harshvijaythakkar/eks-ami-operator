@@ -19,13 +19,13 @@ package controller
 import (
 	"context"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	corev1 "k8s.io/api/core/v1"
 
 	"time"
 
@@ -42,12 +42,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/metrics"
+
+	"github.com/cenkalti/backoff/v4"
 )
 
 // NodeGroupUpgradePolicyReconciler reconciles a NodeGroupUpgradePolicy object
 type NodeGroupUpgradePolicyReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 }
 
@@ -119,7 +121,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	ssmClient := ssm.NewFromConfig(cfg)
 
 	// Describe the node group to get current AMI and other metadata
-	ngOutput, err := eksClient.DescribeNodegroup(ctx, &eks.DescribeNodegroupInput{
+	ngOutput, err := retryDescribeNodegroup(ctx, eksClient, &eks.DescribeNodegroupInput{
 		ClusterName:   &policy.Spec.ClusterName,
 		NodegroupName: &policy.Spec.NodeGroupName,
 	})
@@ -149,7 +151,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	ssmParam := fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended/image_id", eksVersion)
 
 	// Step 3: Fetch latest recommended AMI from SSM
-	ssmOutput, err := ssmClient.GetParameter(ctx, &ssm.GetParameterInput{
+	ssmOutput, err := retryGetParameter(ctx, ssmClient, &ssm.GetParameterInput{
 		Name:           &ssmParam,
 		WithDecryption: aws.Bool(false),
 	})
@@ -187,6 +189,11 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 				NodegroupName: &policy.Spec.NodeGroupName,
 				// No need to specify AMI directly; AWS will use latest recommended AMI
 			})
+			// err := retryUpdateNodegroupVersion(ctx, eksClient, &eks.UpdateNodegroupVersionInput{
+			// 	ClusterName:   &policy.Spec.ClusterName,
+			// 	NodegroupName: &policy.Spec.NodeGroupName,
+			// 	// No need to specify AMI directly; AWS will use latest recommended AMI
+			// })
 
 			if err != nil {
 				logger.Error(err, "failed to initiate node group update")
@@ -244,4 +251,51 @@ func (r *NodeGroupUpgradePolicyReconciler) SetupWithManager(mgr ctrl.Manager) er
 		For(&eksv1alpha1.NodeGroupUpgradePolicy{}).
 		Named("nodegroupupgradepolicy").
 		Complete(r)
+}
+
+// func retryUpdateNodegroupVersion(ctx context.Context, eksClient *eks.Client, input *eks.UpdateNodegroupVersionInput) error {
+//     operation := func() error {
+//         _, err := eksClient.UpdateNodegroupVersion(ctx, input)
+//         return err
+//     }
+
+//     expBackoff := backoff.NewExponentialBackOff()
+//     expBackoff.InitialInterval = 2 * time.Second
+//     expBackoff.MaxElapsedTime = 30 * time.Second // You can tune this
+
+//     return backoff.Retry(operation, expBackoff)
+// }
+
+func retryDescribeNodegroup(ctx context.Context, eksClient *eks.Client, input *eks.DescribeNodegroupInput) (*eks.DescribeNodegroupOutput, error) {
+	var output *eks.DescribeNodegroupOutput
+
+	operation := func() error {
+		var err error
+		output, err = eksClient.DescribeNodegroup(ctx, input)
+		return err
+	}
+
+	expBackoff := backoff.NewExponentialBackOff()
+	expBackoff.InitialInterval = 2 * time.Second
+	expBackoff.MaxElapsedTime = 30 * time.Second
+
+	err := backoff.Retry(operation, expBackoff)
+	return output, err
+}
+
+func retryGetParameter(ctx context.Context, ssmClient *ssm.Client, input *ssm.GetParameterInput) (*ssm.GetParameterOutput, error) {
+	var output *ssm.GetParameterOutput
+
+	operation := func() error {
+		var err error
+		output, err = ssmClient.GetParameter(ctx, input)
+		return err
+	}
+
+	expBackoff := backoff.NewExponentialBackOff()
+	expBackoff.InitialInterval = 2 * time.Second
+	expBackoff.MaxElapsedTime = 30 * time.Second
+
+	err := backoff.Retry(operation, expBackoff)
+	return output, err
 }
