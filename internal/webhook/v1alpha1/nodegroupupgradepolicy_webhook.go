@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -66,22 +67,50 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateCreate(_ context.Context
 	}
 	nodegroupupgradepolicylog.Info("Validation for NodeGroupUpgradePolicy upon creation", "name", nodegroupupgradepolicy.GetName())
 
-	// TODO(user): fill in your validation logic upon object creation.
+	if nodegroupupgradepolicy.Spec.ClusterName == "" {
+		return nil, fmt.Errorf("spec.clusterName must not be empty")
+	}
+
+	if nodegroupupgradepolicy.Spec.NodeGroupName == "" {
+		return nil, fmt.Errorf("spec.nodeGroupName must not be empty")
+	}
+
+	if nodegroupupgradepolicy.Spec.AutoUpgrade && nodegroupupgradepolicy.Spec.CheckInterval == "" {
+		return nil, fmt.Errorf("spec.checkInterval must be set if autoUpgrade is true")
+	}
+
+	if nodegroupupgradepolicy.Spec.CheckInterval != "" {
+		if _, err := time.ParseDuration(nodegroupupgradepolicy.Spec.CheckInterval); err != nil {
+			return nil, fmt.Errorf("spec.checkInterval must be a valid duration string (e.g., '24h')")
+		}
+	}
 
 	return nil, nil
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type NodeGroupUpgradePolicy.
 func (v *NodeGroupUpgradePolicyCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	nodegroupupgradepolicy, ok := newObj.(*eksv1alpha1.NodeGroupUpgradePolicy)
+	newnodegroupupgradepolicy, ok := newObj.(*eksv1alpha1.NodeGroupUpgradePolicy)
 	if !ok {
 		return nil, fmt.Errorf("expected a NodeGroupUpgradePolicy object for the newObj but got %T", newObj)
 	}
-	nodegroupupgradepolicylog.Info("Validation for NodeGroupUpgradePolicy upon update", "name", nodegroupupgradepolicy.GetName())
 
-	// TODO(user): fill in your validation logic upon object update.
+	oldnodegroupupgradepolicy, ok := newObj.(*eksv1alpha1.NodeGroupUpgradePolicy)
+	if !ok {
+		return nil, fmt.Errorf("expected a NodeGroupUpgradePolicy object for the oldObj but got %T", oldObj)
+	}
 
-	return nil, nil
+	nodegroupupgradepolicylog.Info("Validation for NodeGroupUpgradePolicy upon update", "name", newnodegroupupgradepolicy.GetName())
+
+	if newnodegroupupgradepolicy.Spec.ClusterName != oldnodegroupupgradepolicy.Spec.ClusterName {
+		return nil, fmt.Errorf("spec.clusterName cannot be changed after creation")
+	}
+
+	if newnodegroupupgradepolicy.Spec.NodeGroupName != oldnodegroupupgradepolicy.Spec.NodeGroupName {
+		return nil, fmt.Errorf("spec.nodeGroupName cannot be changed after creation")
+	}
+
+	return v.ValidateCreate(context.Background(), newObj)
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type NodeGroupUpgradePolicy.
@@ -92,7 +121,7 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateDelete(ctx context.Conte
 	}
 	nodegroupupgradepolicylog.Info("Validation for NodeGroupUpgradePolicy upon deletion", "name", nodegroupupgradepolicy.GetName())
 
-	// TODO(user): fill in your validation logic upon object deletion.
+	// No delete restrictions for now
 
 	return nil, nil
 }
