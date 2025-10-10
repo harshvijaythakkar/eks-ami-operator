@@ -17,7 +17,12 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"context"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
@@ -96,4 +101,17 @@ type NodeGroupUpgradePolicyList struct {
 
 func init() {
 	SchemeBuilder.Register(&NodeGroupUpgradePolicy{}, &NodeGroupUpgradePolicyList{})
+}
+
+var _ admission.CustomDefaulter = &NodeGroupUpgradePolicy{}
+
+func (r *NodeGroupUpgradePolicy) Default(_ context.Context, _ runtime.Object) error {
+	logf.Log.WithName("nodegroupupgradepolicy-default").Info("Applying defaults", "name", r.Name)
+
+	if r.Spec.CheckInterval == "" {
+		r.Spec.CheckInterval = "24h"
+		logf.Log.WithName("nodegroupupgradepolicy-default").Info("Defaulted CheckInterval to 24h")
+	}
+
+	return nil
 }

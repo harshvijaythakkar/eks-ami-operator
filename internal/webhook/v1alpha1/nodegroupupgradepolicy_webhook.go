@@ -37,6 +37,7 @@ var nodegroupupgradepolicylog = logf.Log.WithName("nodegroupupgradepolicy-resour
 // SetupNodeGroupUpgradePolicyWebhookWithManager registers the webhook for NodeGroupUpgradePolicy in the manager.
 func SetupNodeGroupUpgradePolicyWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&eksv1alpha1.NodeGroupUpgradePolicy{}).
+		WithDefaulter(&eksv1alpha1.NodeGroupUpgradePolicy{}).
 		WithValidator(&NodeGroupUpgradePolicyCustomValidator{}).
 		Complete()
 }
