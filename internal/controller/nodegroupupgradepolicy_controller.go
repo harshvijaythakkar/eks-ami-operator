@@ -18,6 +18,10 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -27,19 +31,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"time"
-
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
-	"github.com/aws/aws-sdk-go-v2/service/eks/types"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+
+	// "github.com/aws/aws-sdk-go-v2/service/eks/types"
 	eksv1alpha1 "github.com/harshvijaythakkar/eks-ami-operator/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"fmt"
-	"strings"
-
-	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/metrics"
 
@@ -132,7 +131,10 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	// Extract current AMI type (for managed node groups, this is usually an enum like AL2_x86_64)
-	currentAmi := ngOutput.Nodegroup.AmiType
+	// currentAmi := ngOutput.Nodegroup.AmiType
+	amiType := ngOutput.Nodegroup.AmiType
+	releaseVersion := aws.ToString(ngOutput.Nodegroup.ReleaseVersion)
+	logger.Info("Nodegroup metadata", "amiType", amiType, "releaseVersion", releaseVersion)
 
 	// Fetch latest recommended AMI for the cluster version
 	// Step 1: Get EKS cluster version
@@ -147,12 +149,30 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	eksVersion := *clusterOutput.Cluster.Version
 	eksVersion = strings.TrimPrefix(eksVersion, "v") // SSM expects version without 'v'
 
-	// Step 2: Build SSM parameter path
-	ssmParam := fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended/image_id", eksVersion)
+	// Step 2: Build dynamic SSM parameter path
+	var ssmPath string
+	switch amiType {
+	case "AL2_x86_64":
+		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion)
+	case "AL2_ARM_64":
+		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2-arm64/recommended", eksVersion)
+	case "AL2023_x86_64_STANDARD":
+		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended", eksVersion)
+	case "AL2023_ARM_64_STANDARD":
+		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/arm64/standard/recommended", eksVersion)
+	case "CUSTOM":
+		logger.Info("Custom AMI detected, skipping SSM lookup")
+		// For custom AMIs, we might want to skip or handle differently
+		// For now, we'll just log and continue
+		return ctrl.Result{}, nil
+	default:
+		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion)
+	}
+	logger.Info("Using SSM path", "ssmPath", ssmPath)
 
 	// Step 3: Fetch latest recommended AMI from SSM
 	ssmOutput, err := retryGetParameter(ctx, ssmClient, &ssm.GetParameterInput{
-		Name:           &ssmParam,
+		Name:           &ssmPath,
 		WithDecryption: aws.Bool(false),
 	})
 
@@ -161,7 +181,22 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{}, err
 	}
 
-	latestAmi := *ssmOutput.Parameter.Value
+	// latestAmi := *ssmOutput.Parameter.Value
+
+	// Step 4: Parse JSON from SSM parameter
+	var amiMetadata struct {
+		ImageID        string `json:"image_id"`
+		ReleaseVersion string `json:"release_version"`
+	}
+	if err := json.Unmarshal([]byte(*ssmOutput.Parameter.Value), &amiMetadata); err != nil {
+		logger.Error(err, "failed to parse SSM parameter JSON")
+		return ctrl.Result{}, err
+	}
+
+	latestReleaseVersion := amiMetadata.ReleaseVersion
+	latestAmi := amiMetadata.ImageID
+
+	logger.Info("Fetched latest AMI metadata", "latestAmi", latestAmi, "latestReleaseVersion", latestReleaseVersion)
 
 	now := float64(time.Now().Unix())
 	metrics.LastCheckedTimestamp.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(now)
@@ -170,14 +205,15 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	metrics.OutdatedNodeGroups.WithLabelValues(policy.Spec.ClusterName).Set(0)
 
 	// Compare currentAmi with latest recommended AMI
-	currentAmiStr := types.AMITypes(latestAmi)
-	if currentAmi != currentAmiStr {
-		logger.Info("AMI mismatch detected", "currentAmi", currentAmiStr, "latestAmi", latestAmi)
+	// currentAmiStr := types.AMITypes(latestAmi)
+	if releaseVersion != latestReleaseVersion {
+		logger.Info("Nodegroup is not using the latest AMI release version", "current", releaseVersion, "latest", latestReleaseVersion)
 
 		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
 		metrics.OutdatedNodeGroups.WithLabelValues(policy.Spec.ClusterName).Inc()
 
-		policy.Status.TargetAmi = latestAmi
+		// policy.Status.TargetAmi = latestAmi
+		policy.Status.TargetAmi = latestReleaseVersion
 
 		// If outdated and AutoUpgrade is true, trigger UpdateNodegroupVersion
 		if policy.Spec.AutoUpgrade {
@@ -215,9 +251,10 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 			SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionFalse, "OutdatedAMI", "Node group is using an outdated AMI.")
 		}
 	} else {
-		logger.Info("Node group is using the latest AMI", "ami", currentAmiStr)
+		logger.Info("Node group is compliant with latest AMI release version", "version", latestReleaseVersion)
 		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(1)
-		policy.Status.TargetAmi = latestAmi
+		// policy.Status.TargetAmi = latestAmi
+		policy.Status.TargetAmi = latestReleaseVersion
 		policy.Status.UpgradeStatus = "Succeeded"
 		SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeSucceeded", "Node group upgrade completed successfully.")
 	}
@@ -227,7 +264,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 
 	// Update status with current AMI and timestamp
 	policy.Status.LastChecked = metav1.Now()
-	policy.Status.CurrentAmi = string(currentAmi)
+	policy.Status.CurrentAmi = string(latestReleaseVersion)
 
 	// Save status update to Kubernetes
 	if err := r.Status().Update(ctx, &policy); err != nil {
