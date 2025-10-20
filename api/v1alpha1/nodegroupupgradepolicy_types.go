@@ -37,6 +37,7 @@ type NodeGroupUpgradePolicySpec struct {
 
 	ClusterName   string `json:"clusterName"`
 	NodeGroupName string `json:"nodeGroupName"`
+	Region        string `json:"region"`
 	CheckInterval string `json:"checkInterval"` // e.g., "24h"
 	AutoUpgrade   bool   `json:"autoUpgrade"`
 }

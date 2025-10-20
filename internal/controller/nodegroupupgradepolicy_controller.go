@@ -32,7 +32,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
+	// "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
@@ -41,6 +41,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/metrics"
+	"github.com/harshvijaythakkar/eks-ami-operator/pkg/awsclient"
 
 	"github.com/cenkalti/backoff/v4"
 )
@@ -109,15 +110,26 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	// Load AWS configuration (uses default credentials chain — can be IRSA in-cluster)
-	cfg, err := config.LoadDefaultConfig(ctx)
+	// cfg, err := config.LoadDefaultConfig(ctx)
+	// if err != nil {
+	// 	logger.Error(err, "unable to load AWS config")
+	// 	return ctrl.Result{}, err
+	// }
+
+	// Create AWS clients using region from CRD
+	clients, err := awsclient.NewAWSClients(ctx, policy.Spec.Region)
 	if err != nil {
-		logger.Error(err, "unable to load AWS config")
+		logger.Error(err, "unable to create AWS clients")
 		return ctrl.Result{}, err
 	}
 
-	// Create AWS service clients
-	eksClient := eks.NewFromConfig(cfg)
-	ssmClient := ssm.NewFromConfig(cfg)
+	// // Create AWS service clients
+	// eksClient := eks.NewFromConfig(cfg)
+	// ssmClient := ssm.NewFromConfig(cfg)
+
+	// Use clients
+	eksClient := clients.EKS
+	ssmClient := clients.SSM
 
 	// Describe the node group to get current AMI and other metadata
 	ngOutput, err := retryDescribeNodegroup(ctx, eksClient, &eks.DescribeNodegroupInput{

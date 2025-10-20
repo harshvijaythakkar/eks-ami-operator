@@ -48,11 +48,14 @@ spec:
                 type: string
               nodeGroupName:
                 type: string
+              region:
+                type: string
             required:
             - autoUpgrade
             - checkInterval
             - clusterName
             - nodeGroupName
+            - region
             type: object
           status:
             description: status defines the observed state of NodeGroupUpgradePolicy
