@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -16,6 +17,7 @@ var logger = ctrl.Log.WithName("awsclient")
 type AWSClients struct {
 	EKS *eks.Client
 	SSM *ssm.Client
+	EC2 *ec2.Client
 	// Add more clients here as needed
 }
 
@@ -34,6 +36,7 @@ func NewAWSClients(ctx context.Context, region string) (*AWSClients, error) {
 	clients := &AWSClients{
 		EKS: eks.NewFromConfig(cfg),
 		SSM: ssm.NewFromConfig(cfg),
+		EC2: ec2.NewFromConfig(cfg),
 	}
 	return clients, nil
 }

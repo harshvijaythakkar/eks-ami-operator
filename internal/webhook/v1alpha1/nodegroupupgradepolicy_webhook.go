@@ -27,6 +27,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+
+	"github.com/harshvijaythakkar/eks-ami-operator/pkg/awsclient"
+
 	eksv1alpha1 "github.com/harshvijaythakkar/eks-ami-operator/api/v1alpha1"
 )
 
@@ -61,7 +66,7 @@ type NodeGroupUpgradePolicyCustomValidator struct {
 var _ webhook.CustomValidator = &NodeGroupUpgradePolicyCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type NodeGroupUpgradePolicy.
-func (v *NodeGroupUpgradePolicyCustomValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (v *NodeGroupUpgradePolicyCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	nodegroupupgradepolicy, ok := obj.(*eksv1alpha1.NodeGroupUpgradePolicy)
 	if !ok {
 		return nil, fmt.Errorf("expected a NodeGroupUpgradePolicy object but got %T", obj)
@@ -74,6 +79,21 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateCreate(_ context.Context
 
 	if nodegroupupgradepolicy.Spec.NodeGroupName == "" {
 		return nil, fmt.Errorf("spec.nodeGroupName must not be empty")
+	}
+
+	if nodegroupupgradepolicy.Spec.Region == "" {
+		return nil, fmt.Errorf("spec.region must not be empty")
+	}
+
+	res, err := isValidAWSRegion(ctx, nodegroupupgradepolicy.Spec.Region)
+
+	if err != nil {
+		nodegroupupgradepolicylog.Error(err, "failed to validate AWS region")
+		return nil, fmt.Errorf("unable to validate spec.region: %w", err)
+	}
+
+	if !res {
+		return nil, fmt.Errorf("spec.region must be a valid AWS region")
 	}
 
 	if nodegroupupgradepolicy.Spec.AutoUpgrade && nodegroupupgradepolicy.Spec.CheckInterval == "" {
@@ -111,6 +131,10 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateUpdate(_ context.Context
 		return nil, fmt.Errorf("spec.nodeGroupName cannot be changed after creation")
 	}
 
+	if newnodegroupupgradepolicy.Spec.Region != oldnodegroupupgradepolicy.Spec.Region {
+		return nil, fmt.Errorf("spec.region cannot be changed after creation")
+	}
+
 	return v.ValidateCreate(context.Background(), newObj)
 }
 
@@ -125,4 +149,26 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateDelete(ctx context.Conte
 	// No delete restrictions for now
 
 	return nil, nil
+}
+
+// isValidAWSRegion checks if the given region is valid by querying EC2's DescribeRegions API
+func isValidAWSRegion(ctx context.Context, region string) (bool, error) {
+	clients, err := awsclient.NewAWSClients(ctx, region)
+	if err != nil {
+		return false, err
+	}
+	ec2Client := clients.EC2
+
+	resp, err := ec2Client.DescribeRegions(ctx, &ec2.DescribeRegionsInput{})
+	if err != nil {
+		return false, err
+	}
+
+	for _, r := range resp.Regions {
+		if aws.ToString(r.RegionName) == region {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
