@@ -106,6 +106,12 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateCreate(ctx context.Conte
 		}
 	}
 
+	if nodegroupupgradepolicy.Spec.StartAfter != "" {
+		if _, err := time.Parse(time.RFC3339, nodegroupupgradepolicy.Spec.StartAfter); err != nil {
+			return nil, fmt.Errorf("spec.startAfter must be a valid RFC3339 timestamp")
+		}
+	}
+
 	return nil, nil
 }
 

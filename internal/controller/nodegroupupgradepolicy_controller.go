@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -35,6 +36,7 @@ import (
 	// "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/aws/smithy-go"
 
 	// "github.com/aws/aws-sdk-go-v2/service/eks/types"
 	eksv1alpha1 "github.com/harshvijaythakkar/eks-ami-operator/api/v1alpha1"
@@ -52,6 +54,13 @@ type NodeGroupUpgradePolicyReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 }
+
+const (
+	UpgradeStatusFailed     = "Failed"
+    UpgradeStatusInProgress = "InProgress"
+    UpgradeStatusSucceeded  = "Succeeded"
+    UpgradeStatusOutdated   = "Outdated"
+)
 
 // +kubebuilder:rbac:groups=eks.aws.harsh.dev,resources=nodegroupupgradepolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=eks.aws.harsh.dev,resources=nodegroupupgradepolicies/status,verbs=get;update;patch
@@ -106,6 +115,25 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 		if err := r.Update(ctx, &policy); err != nil {
 			logger.Error(err, "failed to add finalizer")
 			return ctrl.Result{}, err
+		}
+	}
+
+	// Check if Paused
+	if policy.Spec.Paused {
+		logger.Info("Upgrade is paused, skipping reconciliation", "name", policy.Name)
+		return ctrl.Result{}, nil
+	}
+
+	// Check StartAfter
+	if policy.Spec.StartAfter != "" {
+		startAfterTime, err := time.Parse(time.RFC3339, policy.Spec.StartAfter)
+		if err != nil {
+			logger.Error(err, "Invalid startAfter format")
+			return ctrl.Result{}, err
+		}
+		if time.Now().Before(startAfterTime) {
+			logger.Info("StartAfter time not reached, skipping reconciliation", "name", policy.Name)
+			return ctrl.Result{}, nil
 		}
 	}
 
@@ -216,6 +244,31 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	// Reset outdated count for this cluster at the start of reconciliation
 	metrics.OutdatedNodeGroups.WithLabelValues(policy.Spec.ClusterName).Set(0)
 
+	if policy.Spec.Paused {
+		logger.Info("Upgrade is paused, skipping reconciliation", "name", policy.Name)
+		return ctrl.Result{}, nil
+	}
+
+	if policy.Spec.StartAfter != "" {
+		startAfterTime, err := time.Parse(time.RFC3339, policy.Spec.StartAfter)
+		if err != nil {
+			logger.Error(err, "Invalid startAfter format")
+			return ctrl.Result{}, err
+		}
+		if time.Now().Before(startAfterTime) {
+			logger.Info("StartAfter time not reached, skipping reconciliation", "name", policy.Name)
+			return ctrl.Result{}, nil
+		}
+	}
+
+	minInterval := 6 * time.Hour
+	if !policy.Status.LastUpgradeAttempt.IsZero() {
+		if time.Since(policy.Status.LastUpgradeAttempt.Time) < minInterval {
+			logger.Info("Last upgrade attempt was too recent, skipping", "lastAttempt", policy.Status.LastUpgradeAttempt.Time)
+			return ctrl.Result{}, nil
+		}
+	}
+
 	// Compare currentAmi with latest recommended AMI
 	// currentAmiStr := types.AMITypes(latestAmi)
 	if releaseVersion != latestReleaseVersion {
@@ -244,14 +297,20 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 			// })
 
 			if err != nil {
-				logger.Error(err, "failed to initiate node group update")
-				policy.Status.UpgradeStatus = "Failed"
+				var apiError smithy.APIError
+				if errors.As(err, &apiError) {
+					logger.Error(err, "AWS API error during node group update", "code", apiError.ErrorCode(), "message", apiError.ErrorMessage())
+				} else {
+					logger.Error(err, "failed to initiate node group update")
+				}
+				policy.Status.UpgradeStatus = UpgradeStatusFailed
 				SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UpgradeFailed", "Failed to upgrade node group to latest AMI.")
 				// Metric for failed upgrade attempt
 				metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "failed").Inc()
 
 			} else {
-				policy.Status.UpgradeStatus = "InProgress"
+				policy.Status.UpgradeStatus = UpgradeStatusInProgress
+				policy.Status.LastUpgradeAttempt = metav1.Now()
 				SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeInitiated", "Upgrade to latest AMI initiated.")
 				// Metric for successful upgrade initiation
 				metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "success").Inc()
@@ -259,7 +318,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 		} else {
 			logger.Info("AutoUpgrade is disabled, skipping update")
 			metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "skipped").Inc()
-			policy.Status.UpgradeStatus = "Outdated"
+			policy.Status.UpgradeStatus = UpgradeStatusOutdated
 			SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionFalse, "OutdatedAMI", "Node group is using an outdated AMI.")
 		}
 	} else {
@@ -267,7 +326,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(1)
 		// policy.Status.TargetAmi = latestAmi
 		policy.Status.TargetAmi = latestReleaseVersion
-		policy.Status.UpgradeStatus = "Succeeded"
+		policy.Status.UpgradeStatus = UpgradeStatusSucceeded
 		SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeSucceeded", "Node group upgrade completed successfully.")
 	}
 

@@ -40,6 +40,8 @@ type NodeGroupUpgradePolicySpec struct {
 	Region        string `json:"region"`
 	CheckInterval string `json:"checkInterval"` // e.g., "24h"
 	AutoUpgrade   bool   `json:"autoUpgrade"`
+	Paused        bool   `json:"paused,omitempty"`
+	StartAfter    string `json:"startAfter,omitempty"` // RFC3339 timestamp
 }
 
 // NodeGroupUpgradePolicyStatus defines the observed state of NodeGroupUpgradePolicy.
@@ -62,13 +64,12 @@ type NodeGroupUpgradePolicyStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	// +optional
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
-
-	LastChecked   metav1.Time `json:"lastChecked,omitempty"`
-	CurrentAmi    string      `json:"currentAmi,omitempty"`
-	TargetAmi     string      `json:"targetAmi,omitempty"`
-	UpgradeStatus string      `json:"upgradeStatus,omitempty"` // InProgress, Succeeded, Failed
-
+	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+	LastChecked        metav1.Time        `json:"lastChecked,omitempty"`
+	LastUpgradeAttempt metav1.Time        `json:"lastUpgradeAttempt,omitempty"`
+	CurrentAmi         string             `json:"currentAmi,omitempty"`
+	TargetAmi          string             `json:"targetAmi,omitempty"`
+	UpgradeStatus      string             `json:"upgradeStatus,omitempty"` // InProgress, Succeeded, Failed
 }
 
 // +kubebuilder:object:root=true
