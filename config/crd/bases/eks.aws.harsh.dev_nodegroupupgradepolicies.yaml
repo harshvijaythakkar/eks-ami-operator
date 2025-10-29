@@ -48,7 +48,11 @@ spec:
                 type: string
               nodeGroupName:
                 type: string
+              paused:
+                type: boolean
               region:
+                type: string
+              startAfter:
                 type: string
             required:
             - autoUpgrade
@@ -134,9 +138,18 @@ spec:
               lastChecked:
                 format: date-time
                 type: string
+              lastUpgradeAttempt:
+                format: date-time
+                type: string
               targetAmi:
                 type: string
               upgradeStatus:
+                enum:
+                - Failed
+                - InProgress
+                - Succeeded
+                - Outdated
+                - Skipped
                 type: string
             type: object
         required:
