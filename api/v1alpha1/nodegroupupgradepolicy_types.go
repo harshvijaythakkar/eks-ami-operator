@@ -69,7 +69,8 @@ type NodeGroupUpgradePolicyStatus struct {
 	LastUpgradeAttempt metav1.Time        `json:"lastUpgradeAttempt,omitempty"`
 	CurrentAmi         string             `json:"currentAmi,omitempty"`
 	TargetAmi          string             `json:"targetAmi,omitempty"`
-	UpgradeStatus      string             `json:"upgradeStatus,omitempty"` // InProgress, Succeeded, Failed
+	// +kubebuilder:validation:Enum=Failed;InProgress;Succeeded;Outdated;Skipped
+	UpgradeStatus string `json:"upgradeStatus,omitempty"`
 }
 
 // +kubebuilder:object:root=true

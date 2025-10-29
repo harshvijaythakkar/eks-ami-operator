@@ -57,9 +57,10 @@ type NodeGroupUpgradePolicyReconciler struct {
 
 const (
 	UpgradeStatusFailed     = "Failed"
-    UpgradeStatusInProgress = "InProgress"
-    UpgradeStatusSucceeded  = "Succeeded"
-    UpgradeStatusOutdated   = "Outdated"
+	UpgradeStatusInProgress = "InProgress"
+	UpgradeStatusSucceeded  = "Succeeded"
+	UpgradeStatusOutdated   = "Outdated"
+	UpgradeStatusSkipped    = "Skipped"
 )
 
 // +kubebuilder:rbac:groups=eks.aws.harsh.dev,resources=nodegroupupgradepolicies,verbs=get;list;watch;create;update;patch;delete
@@ -316,9 +317,12 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 				metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "success").Inc()
 			}
 		} else {
-			logger.Info("AutoUpgrade is disabled, skipping update")
+			logger.Info("AutoUpgrade is disabled, upgrade will not be triggered", "name", policy.Name)
 			metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "skipped").Inc()
-			policy.Status.UpgradeStatus = UpgradeStatusOutdated
+			policy.Status.UpgradeStatus = UpgradeStatusSkipped
+			policy.Status.LastChecked = metav1.Now()
+			policy.Status.CurrentAmi = releaseVersion
+			SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UpgradeSkipped", "AutoUpgrade is disabled; upgrade was skipped.")
 			SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionFalse, "OutdatedAMI", "Node group is using an outdated AMI.")
 		}
 	} else {
@@ -328,14 +332,10 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 		policy.Status.TargetAmi = latestReleaseVersion
 		policy.Status.UpgradeStatus = UpgradeStatusSucceeded
 		SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeSucceeded", "Node group upgrade completed successfully.")
+		SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpToDate", "Node group is using the latest recommended AMI.")
+		policy.Status.LastChecked = metav1.Now()
+		policy.Status.CurrentAmi = releaseVersion
 	}
-
-	// Update CR status and Conditions
-	SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpToDate", "Node group is using the latest recommended AMI.")
-
-	// Update status with current AMI and timestamp
-	policy.Status.LastChecked = metav1.Now()
-	policy.Status.CurrentAmi = string(latestReleaseVersion)
 
 	// Save status update to Kubernetes
 	if err := r.Status().Update(ctx, &policy); err != nil {
