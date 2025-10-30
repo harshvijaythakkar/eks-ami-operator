@@ -122,7 +122,7 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateUpdate(_ context.Context
 		return nil, fmt.Errorf("expected a NodeGroupUpgradePolicy object for the newObj but got %T", newObj)
 	}
 
-	oldnodegroupupgradepolicy, ok := newObj.(*eksv1alpha1.NodeGroupUpgradePolicy)
+	oldnodegroupupgradepolicy, ok := oldObj.(*eksv1alpha1.NodeGroupUpgradePolicy)
 	if !ok {
 		return nil, fmt.Errorf("expected a NodeGroupUpgradePolicy object for the oldObj but got %T", oldObj)
 	}
