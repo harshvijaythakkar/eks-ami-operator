@@ -128,6 +128,7 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateUpdate(ctx context.Conte
 	}
 
 	nodegroupupgradepolicylog.Info("Validation for NodeGroupUpgradePolicy upon update", "name", newnodegroupupgradepolicy.GetName())
+	nodegroupupgradepolicylog.Info("Object recieved", "old", oldnodegroupupgradepolicy, "new", newnodegroupupgradepolicy)
 
 	if newnodegroupupgradepolicy.Spec.ClusterName != oldnodegroupupgradepolicy.Spec.ClusterName {
 		nodegroupupgradepolicylog.Info("ClusterName changed", "old", oldnodegroupupgradepolicy.Spec.ClusterName, "new", newnodegroupupgradepolicy.Spec.ClusterName)
