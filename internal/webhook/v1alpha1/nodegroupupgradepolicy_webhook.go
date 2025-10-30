@@ -116,7 +116,7 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateCreate(ctx context.Conte
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type NodeGroupUpgradePolicy.
-func (v *NodeGroupUpgradePolicyCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+func (v *NodeGroupUpgradePolicyCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
 	newnodegroupupgradepolicy, ok := newObj.(*eksv1alpha1.NodeGroupUpgradePolicy)
 	if !ok {
 		return nil, fmt.Errorf("expected a NodeGroupUpgradePolicy object for the newObj but got %T", newObj)
@@ -130,18 +130,26 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateUpdate(_ context.Context
 	nodegroupupgradepolicylog.Info("Validation for NodeGroupUpgradePolicy upon update", "name", newnodegroupupgradepolicy.GetName())
 
 	if newnodegroupupgradepolicy.Spec.ClusterName != oldnodegroupupgradepolicy.Spec.ClusterName {
+		nodegroupupgradepolicylog.Info("ClusterName changed", "old", oldnodegroupupgradepolicy.Spec.ClusterName, "new", newnodegroupupgradepolicy.Spec.ClusterName)
 		return nil, fmt.Errorf("spec.clusterName cannot be changed after creation")
 	}
 
 	if newnodegroupupgradepolicy.Spec.NodeGroupName != oldnodegroupupgradepolicy.Spec.NodeGroupName {
+		nodegroupupgradepolicylog.Info("NodeGroupName changed", "old", oldnodegroupupgradepolicy.Spec.NodeGroupName, "new", newnodegroupupgradepolicy.Spec.NodeGroupName)
 		return nil, fmt.Errorf("spec.nodeGroupName cannot be changed after creation")
 	}
 
 	if newnodegroupupgradepolicy.Spec.Region != oldnodegroupupgradepolicy.Spec.Region {
+		nodegroupupgradepolicylog.Info("Region changed", "old", oldnodegroupupgradepolicy.Spec.Region, "new", newnodegroupupgradepolicy.Spec.Region)
 		return nil, fmt.Errorf("spec.region cannot be changed after creation")
 	}
 
-	return v.ValidateCreate(context.Background(), newObj)
+
+	if _, err := v.ValidateCreate(ctx, newObj); err != nil {
+        return nil, err
+    }
+
+	return nil, nil
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type NodeGroupUpgradePolicy.
