@@ -138,6 +138,14 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 		}
 	}
 
+	minInterval := 6 * time.Hour
+	if !policy.Status.LastUpgradeAttempt.IsZero() {
+		if time.Since(policy.Status.LastUpgradeAttempt.Time) < minInterval {
+			logger.Info("Last upgrade attempt was too recent, skipping", "lastAttempt", policy.Status.LastUpgradeAttempt.Time)
+			return ctrl.Result{}, nil
+		}
+	}
+
 	// Load AWS configuration (uses default credentials chain — can be IRSA in-cluster)
 	// cfg, err := config.LoadDefaultConfig(ctx)
 	// if err != nil {
@@ -245,31 +253,6 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	// Reset outdated count for this cluster at the start of reconciliation
 	metrics.OutdatedNodeGroups.WithLabelValues(policy.Spec.ClusterName).Set(0)
 
-	if policy.Spec.Paused {
-		logger.Info("Upgrade is paused, skipping reconciliation", "name", policy.Name)
-		return ctrl.Result{}, nil
-	}
-
-	if policy.Spec.StartAfter != "" {
-		startAfterTime, err := time.Parse(time.RFC3339, policy.Spec.StartAfter)
-		if err != nil {
-			logger.Error(err, "Invalid startAfter format")
-			return ctrl.Result{}, err
-		}
-		if time.Now().Before(startAfterTime) {
-			logger.Info("StartAfter time not reached, skipping reconciliation", "name", policy.Name)
-			return ctrl.Result{}, nil
-		}
-	}
-
-	minInterval := 6 * time.Hour
-	if !policy.Status.LastUpgradeAttempt.IsZero() {
-		if time.Since(policy.Status.LastUpgradeAttempt.Time) < minInterval {
-			logger.Info("Last upgrade attempt was too recent, skipping", "lastAttempt", policy.Status.LastUpgradeAttempt.Time)
-			return ctrl.Result{}, nil
-		}
-	}
-
 	// Compare currentAmi with latest recommended AMI
 	// currentAmiStr := types.AMITypes(latestAmi)
 	if releaseVersion != latestReleaseVersion {
@@ -349,6 +332,20 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 		logger.Error(err, "invalid checkInterval format, defaulting to 24h")
 		interval = 24 * time.Hour
 	}
+
+	// Check if enough time has passed since lastChecked
+	if !policy.Status.LastChecked.IsZero() {
+		lastCheckedTime := policy.Status.LastChecked.Time
+		timeSinceLastCheck := time.Since(lastCheckedTime)
+		if timeSinceLastCheck < interval {
+			remaining := interval - timeSinceLastCheck
+			logger.Info("Requeueing after remaining interval", "remaining", remaining)
+			return ctrl.Result{RequeueAfter: remaining}, nil
+		}
+	}
+
+	// If no lastChecked or interval has passed, proceed and requeue after full interval
+	logger.Info("Requeueing after full interval", "interval", interval)
 	return ctrl.Result{RequeueAfter: interval}, nil
 }
 
