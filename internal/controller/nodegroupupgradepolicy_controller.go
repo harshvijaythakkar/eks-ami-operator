@@ -126,7 +126,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	// Skip reconciliation if startAfter is set and not yet reached
-	if policy.Spec.StartAfter != "" {	
+	if policy.Spec.StartAfter != "" {
 		logger.Info("StartAfter check", "startAfter", policy.Spec.StartAfter)
 		startAfterTime, err := time.Parse(time.RFC3339, policy.Spec.StartAfter)
 		if err != nil {
@@ -388,6 +388,17 @@ func retryDescribeNodegroup(ctx context.Context, eksClient *eks.Client, input *e
 	operation := func() error {
 		var err error
 		output, err = eksClient.DescribeNodegroup(ctx, input)
+		if err != nil {
+			var apiErr smithy.APIError
+			if errors.As(err, &apiErr) {
+				switch apiErr.ErrorCode() {
+				case "ResourceNotFoundException", "InvalidParameterException":
+					logf.FromContext(ctx).Error(err, "Permanent error during DescribeNodegroup, skipping retries", "errorCode", apiErr.ErrorCode(), "clusterName", *input.ClusterName, "nodegroupName", *input.NodegroupName)
+					// Return backoff.Permanent to stop retrying
+					return backoff.Permanent(err)
+				}
+			}
+		}
 		return err
 	}
 
@@ -405,6 +416,16 @@ func retryGetParameter(ctx context.Context, ssmClient *ssm.Client, input *ssm.Ge
 	operation := func() error {
 		var err error
 		output, err = ssmClient.GetParameter(ctx, input)
+		if err != nil {
+			var apiErr smithy.APIError
+			if errors.As(err, &apiErr) {
+				switch apiErr.ErrorCode() {
+				case "ParameterNotFound", "InvalidParameter":
+					logf.FromContext(ctx).Error(err, "Permanent error during GetParameter, skipping retries", "errorCode", apiErr.ErrorCode(), "parameterName", *input.Name)
+					return backoff.Permanent(err)
+				}
+			}
+		}
 		return err
 	}
 
