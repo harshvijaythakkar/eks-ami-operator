@@ -126,8 +126,8 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	// Skip reconciliation if startAfter is set and not yet reached
-	if policy.Spec.StartAfter != "" {
-		logger.Info("StartAfter set to:", policy.Spec.StartAfter)
+	if policy.Spec.StartAfter != "" {	
+		logger.Info("StartAfter check", "startAfter", policy.Spec.StartAfter)
 		startAfterTime, err := time.Parse(time.RFC3339, policy.Spec.StartAfter)
 		if err != nil {
 			logger.Error(err, "Invalid startAfter format")
