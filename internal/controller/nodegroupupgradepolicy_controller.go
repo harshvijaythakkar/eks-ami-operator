@@ -125,24 +125,29 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{}, nil
 	}
 
-	// Check StartAfter
+	// Skip reconciliation if startAfter is set and not yet reached
 	if policy.Spec.StartAfter != "" {
+		logger.Info("StartAfter set to:", policy.Spec.StartAfter)
 		startAfterTime, err := time.Parse(time.RFC3339, policy.Spec.StartAfter)
 		if err != nil {
 			logger.Error(err, "Invalid startAfter format")
 			return ctrl.Result{}, err
 		}
 		if time.Now().Before(startAfterTime) {
-			logger.Info("StartAfter time not reached, skipping reconciliation", "name", policy.Name)
-			return ctrl.Result{}, nil
+			remaining := time.Until(startAfterTime)
+			logger.Info("StartAfter time not reached, skipping reconciliation", "startAfter", startAfterTime, "remaining", remaining)
+			return ctrl.Result{RequeueAfter: remaining}, nil
 		}
 	}
 
 	minInterval := 6 * time.Hour
 	if !policy.Status.LastUpgradeAttempt.IsZero() {
-		if time.Since(policy.Status.LastUpgradeAttempt.Time) < minInterval {
-			logger.Info("Last upgrade attempt was too recent, skipping", "lastAttempt", policy.Status.LastUpgradeAttempt.Time)
-			return ctrl.Result{}, nil
+		lastAttempt := policy.Status.LastUpgradeAttempt.Time
+		timeSinceLastAttempt := time.Since(lastAttempt)
+		if timeSinceLastAttempt < minInterval {
+			remaining := minInterval - timeSinceLastAttempt
+			logger.Info("Last upgrade attempt was too recent, skipping", "lastAttempt", lastAttempt, "remaining", remaining)
+			return ctrl.Result{RequeueAfter: remaining}, nil
 		}
 	}
 
@@ -288,6 +293,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 					logger.Error(err, "failed to initiate node group update")
 				}
 				policy.Status.UpgradeStatus = UpgradeStatusFailed
+				policy.Status.LastUpgradeAttempt = metav1.Now()
 				SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UpgradeFailed", "Failed to upgrade node group to latest AMI.")
 				// Metric for failed upgrade attempt
 				metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "failed").Inc()
