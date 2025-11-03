@@ -27,3 +27,5 @@ go.work
 *~
 
 charts/*
+
+.DS_Store
