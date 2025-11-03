@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	// "github.com/aws/aws-sdk-go-v2/config"
@@ -248,7 +249,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 		var apiErr smithy.APIError
 		if errors.As(err, &apiErr) && (apiErr.ErrorCode() == "ParameterNotFound" || apiErr.ErrorCode() == "InvalidParameter") {
 			logger.Info("Skipping reconciliation due to permanent ssm error", "errorCode", apiErr.ErrorCode(), "ssmPath", ssmPath)
-			
+
 			// Requeue after a longer interval to retry later in case the config is fixed
 			return ctrl.Result{RequeueAfter: 6 * time.Hour}, nil
 		}
@@ -398,6 +399,7 @@ func (r *NodeGroupUpgradePolicyReconciler) SetupWithManager(mgr ctrl.Manager) er
 	r.Recorder = mgr.GetEventRecorderFor("nodegroupupgradepolicy-controller")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&eksv1alpha1.NodeGroupUpgradePolicy{}).
+		WithEventFilter(predicate.GenerationChangedPredicate{}).
 		Named("nodegroupupgradepolicy").
 		Complete(r)
 }
