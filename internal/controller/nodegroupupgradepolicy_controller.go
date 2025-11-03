@@ -162,7 +162,8 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	clients, err := awsclient.NewAWSClients(ctx, policy.Spec.Region)
 	if err != nil {
 		logger.Error(err, "unable to create AWS clients")
-		return ctrl.Result{}, err
+		interval, err := time.ParseDuration(policy.Spec.CheckInterval)
+		return ctrl.Result{RequeueAfter: interval}, err
 	}
 
 	// // Create AWS service clients
@@ -180,8 +181,20 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	})
 
 	if err != nil {
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) && (apiErr.ErrorCode() == "ResourceNotFoundException" || apiErr.ErrorCode() == "InvalidParameterException") {
+			logger.Info("Skipping reconciliation due to permanent nodegroup error", "errorCode", apiErr.ErrorCode(), "nodegroupName", policy.Spec.NodeGroupName)
+
+			// Requeue after a longer interval to retry later in case the config is fixed
+			return ctrl.Result{RequeueAfter: 6 * time.Hour}, nil
+
+		}
 		logger.Error(err, "failed to describe node group")
-		return ctrl.Result{}, err
+		interval, parseErr := time.ParseDuration(policy.Spec.CheckInterval)
+		if parseErr != nil {
+			interval = 24 * time.Hour
+		}
+		return ctrl.Result{RequeueAfter: interval}, nil
 	}
 
 	// Extract current AMI type (for managed node groups, this is usually an enum like AL2_x86_64)
@@ -197,7 +210,8 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	})
 	if err != nil {
 		logger.Error(err, "failed to describe EKS cluster")
-		return ctrl.Result{}, err
+		interval, err := time.ParseDuration(policy.Spec.CheckInterval)
+		return ctrl.Result{RequeueAfter: interval}, err
 	}
 
 	eksVersion := *clusterOutput.Cluster.Version
@@ -231,8 +245,19 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	})
 
 	if err != nil {
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) && (apiErr.ErrorCode() == "ParameterNotFound" || apiErr.ErrorCode() == "InvalidParameter") {
+			logger.Info("Skipping reconciliation due to permanent ssm error", "errorCode", apiErr.ErrorCode(), "ssmPath", ssmPath)
+			
+			// Requeue after a longer interval to retry later in case the config is fixed
+			return ctrl.Result{RequeueAfter: 6 * time.Hour}, nil
+		}
 		logger.Error(err, "failed to get recommended AMI from SSM")
-		return ctrl.Result{}, err
+		interval, parseErr := time.ParseDuration(policy.Spec.CheckInterval)
+		if parseErr != nil {
+			interval = 24 * time.Hour
+		}
+		return ctrl.Result{RequeueAfter: interval}, nil
 	}
 
 	// latestAmi := *ssmOutput.Parameter.Value
@@ -244,7 +269,11 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	}
 	if err := json.Unmarshal([]byte(*ssmOutput.Parameter.Value), &amiMetadata); err != nil {
 		logger.Error(err, "failed to parse SSM parameter JSON")
-		return ctrl.Result{}, err
+		interval, parseErr := time.ParseDuration(policy.Spec.CheckInterval)
+		if parseErr != nil {
+			interval = 24 * time.Hour
+		}
+		return ctrl.Result{RequeueAfter: interval}, err
 	}
 
 	latestReleaseVersion := amiMetadata.ReleaseVersion
@@ -329,7 +358,11 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	// Save status update to Kubernetes
 	if err := r.Status().Update(ctx, &policy); err != nil {
 		logger.Error(err, "failed to update status")
-		return ctrl.Result{}, err
+		interval, parseErr := time.ParseDuration(policy.Spec.CheckInterval)
+		if parseErr != nil {
+			interval = 24 * time.Hour
+		}
+		return ctrl.Result{RequeueAfter: interval}, err
 	}
 
 	// Requeue after specified interval (e.g., 24h) to re-check AMI compliance
