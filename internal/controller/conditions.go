@@ -16,13 +16,12 @@ func SetCondition(conditions *[]metav1.Condition, conditionType string, status m
 	})
 }
 
-
 // Convenience wrapper for AMICompliance condition
 func SetAMIComplianceCondition(conditions *[]metav1.Condition, status metav1.ConditionStatus, reason, message string) {
-    SetCondition(conditions, "AMICompliance", status, reason, message)
+	SetCondition(conditions, "AMICompliance", status, reason, message)
 }
 
 // Convenience wrapper for UpgradeInProgress condition
 func SetUpgradeCondition(conditions *[]metav1.Condition, status metav1.ConditionStatus, reason, message string) {
-    SetCondition(conditions, "UpgradeInProgress", status, reason, message)
+	SetCondition(conditions, "UpgradeInProgress", status, reason, message)
 }

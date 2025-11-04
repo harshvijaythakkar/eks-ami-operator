@@ -128,7 +128,7 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateUpdate(ctx context.Conte
 	}
 
 	nodegroupupgradepolicylog.Info("Validation for NodeGroupUpgradePolicy upon update", "name", newnodegroupupgradepolicy.GetName())
-	// nodegroupupgradepolicylog.Info("Object recieved", "old", oldnodegroupupgradepolicy, "new", newnodegroupupgradepolicy)
+	// nodegroupupgradepolicylog.Info("Object received", "old", oldnodegroupupgradepolicy, "new", newnodegroupupgradepolicy)
 
 	if newnodegroupupgradepolicy.Spec.ClusterName != oldnodegroupupgradepolicy.Spec.ClusterName {
 		nodegroupupgradepolicylog.Info("ClusterName changed", "old", oldnodegroupupgradepolicy.Spec.ClusterName, "new", newnodegroupupgradepolicy.Spec.ClusterName)
@@ -145,10 +145,9 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateUpdate(ctx context.Conte
 		return nil, fmt.Errorf("spec.region cannot be changed after creation")
 	}
 
-
 	if _, err := v.ValidateCreate(ctx, newObj); err != nil {
-        return nil, err
-    }
+		return nil, err
+	}
 
 	return nil, nil
 }
