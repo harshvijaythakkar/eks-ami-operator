@@ -358,27 +358,13 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	// Save status update to Kubernetes
-	// if err := r.Status().Update(ctx, &policy); err != nil {
-	// 	logger.Error(err, "failed to update status")
-	// 	interval, parseErr := time.ParseDuration(policy.Spec.CheckInterval)
-	// 	if parseErr != nil {
-	// 		interval = 24 * time.Hour
-	// 	}
-	// 	return ctrl.Result{RequeueAfter: interval}, err
-	// }
-
-	// Save status update only if changed
-	original := policy.DeepCopy()
-
-	if !reflect.DeepEqual(original.Status, policy.Status) {
-		if err := r.Status().Update(ctx, &policy); err != nil {
-			logger.Error(err, "failed to update status")
-			interval, parseErr := time.ParseDuration(policy.Spec.CheckInterval)
-			if parseErr != nil {
-				interval = 24 * time.Hour
-			}
-			return ctrl.Result{RequeueAfter: interval}, err
+	if err := r.Status().Update(ctx, &policy); err != nil {
+		logger.Error(err, "failed to update status")
+		interval, parseErr := time.ParseDuration(policy.Spec.CheckInterval)
+		if parseErr != nil {
+			interval = 24 * time.Hour
 		}
+		return ctrl.Result{RequeueAfter: interval}, err
 	}
 
 	// Requeue after specified interval (e.g., 24h) to re-check AMI compliance
