@@ -68,12 +68,12 @@ Example CR:
 apiVersion: eks.aws.harsh.dev/v1alpha1
 kind: NodeGroupUpgradePolicy
 metadata:
-  name: rpb-node-upgrade-policy
-  namespace: eks-ami-operator-system
+  name: my-node-group-policy-name
+  namespace: my-namespace
 spec:
-  clusterName: int-regional-public-eks
-  nodeGroupName: int-regional-public-eks-nodes
-  region: us-west-2
+  clusterName: my-cluster
+  nodeGroupName: my-node-group
+  region: my-aws-region
   autoUpgrade: true
   checkInterval: 24h
   startAfter: "2025-11-02T10:15:00Z"
