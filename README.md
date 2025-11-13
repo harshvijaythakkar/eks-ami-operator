@@ -1,5 +1,7 @@
 # eks-ami-operator
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](LICENSE)
+
 A Kubernetes operator to **automate and manage EKS node group AMI upgrades** in a production-grade, flexible, and observable way.
 
 ---
