@@ -142,111 +142,32 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 
 	logger.Info("Fetched latest AMI metadata", "latestAmi", latestAmi, "latestReleaseVersion", latestReleaseVersion)
 
-	now := float64(time.Now().Unix())
-	metrics.LastCheckedTimestamp.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(now)
+	// now := float64(time.Now().Unix())
+	// metrics.LastCheckedTimestamp.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(now)
 
 	// Reset outdated count for this cluster at the start of reconciliation
 	metrics.OutdatedNodeGroups.WithLabelValues(policy.Spec.ClusterName).Set(0)
 
-	// Compare currentAmi with latest recommended AMI
-	// currentAmiStr := types.AMITypes(latestAmi)
-	if releaseVersion != latestReleaseVersion {
-		logger.Info("Nodegroup is not using the latest AMI release version", "current", releaseVersion, "latest", latestReleaseVersion)
-
-		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
-		metrics.OutdatedNodeGroups.WithLabelValues(policy.Spec.ClusterName).Inc()
-
-		// policy.Status.TargetAmi = latestAmi
-		policy.Status.TargetAmi = latestReleaseVersion
-
-		// If outdated and AutoUpgrade is true, trigger UpdateNodegroupVersion
-		if policy.Spec.AutoUpgrade {
-			logger.Info("AutoUpgrade is enabled, initiating node group update")
-
-			// Trigger node group update to latest AMI version
-			_, err := eksClient.UpdateNodegroupVersion(ctx, &eks.UpdateNodegroupVersionInput{
-				ClusterName:   &policy.Spec.ClusterName,
-				NodegroupName: &policy.Spec.NodeGroupName,
-				// No need to specify AMI directly; AWS will use latest recommended AMI
-			})
-			// err := retryUpdateNodegroupVersion(ctx, eksClient, &eks.UpdateNodegroupVersionInput{
-			// 	ClusterName:   &policy.Spec.ClusterName,
-			// 	NodegroupName: &policy.Spec.NodeGroupName,
-			// 	// No need to specify AMI directly; AWS will use latest recommended AMI
-			// })
-
-			if err != nil {
-				var apiError smithy.APIError
-				if errors.As(err, &apiError) {
-					logger.Error(err, "AWS API error during node group update", "code", apiError.ErrorCode(), "message", apiError.ErrorMessage())
-				} else {
-					logger.Error(err, "failed to initiate node group update")
-				}
-				policy.Status.UpgradeStatus = UpgradeStatusFailed
-				policy.Status.LastUpgradeAttempt = metav1.Now()
-				SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UpgradeFailed", "Failed to upgrade node group to latest AMI.")
-				// Metric for failed upgrade attempt
-				metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "failed").Inc()
-
-			} else {
-				policy.Status.UpgradeStatus = UpgradeStatusInProgress
-				policy.Status.LastUpgradeAttempt = metav1.Now()
-				SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeInitiated", "Upgrade to latest AMI initiated.")
-				// Metric for successful upgrade initiation
-				metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "success").Inc()
-			}
-		} else {
-			logger.Info("AutoUpgrade is disabled, upgrade will not be triggered", "name", policy.Name)
-			metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "skipped").Inc()
-			policy.Status.UpgradeStatus = UpgradeStatusSkipped
-			policy.Status.LastChecked = metav1.Now()
-			policy.Status.CurrentAmi = releaseVersion
-			SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UpgradeSkipped", "AutoUpgrade is disabled; upgrade was skipped.")
-			SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionFalse, "OutdatedAMI", "Node group is using an outdated AMI.")
-		}
-	} else {
-		logger.Info("Node group is compliant with latest AMI release version", "version", latestReleaseVersion)
-		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(1)
-		// policy.Status.TargetAmi = latestAmi
-		policy.Status.TargetAmi = latestReleaseVersion
-		policy.Status.UpgradeStatus = UpgradeStatusSucceeded
-		SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeSucceeded", "Node group upgrade completed successfully.")
-		SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpToDate", "Node group is using the latest recommended AMI.")
-		policy.Status.LastChecked = metav1.Now()
-		policy.Status.CurrentAmi = releaseVersion
-	}
-
-	// Save status update to Kubernetes
-	if err := r.Status().Update(ctx, &policy); err != nil {
-		logger.Error(err, "failed to update status")
-		interval, parseErr := time.ParseDuration(policy.Spec.CheckInterval)
-		if parseErr != nil {
-			interval = 24 * time.Hour
-		}
-		return ctrl.Result{RequeueAfter: interval}, err
-	}
-
-	// Requeue after specified interval (e.g., 24h) to re-check AMI compliance
-	interval, err := time.ParseDuration(policy.Spec.CheckInterval)
+	// Upgrade logic
+	err = r.processUpgrade(ctx, &policy, aws.ToString(ngOutput.Nodegroup.ReleaseVersion), latestReleaseVersion, clients.EKS)
 	if err != nil {
-		logger.Error(err, "invalid checkInterval format, defaulting to 24h")
-		interval = 24 * time.Hour
+		return ctrl.Result{RequeueAfter: parseInterval(policy.Spec.CheckInterval)}, err
 	}
 
 	// Check if enough time has passed since lastChecked
-	if !policy.Status.LastChecked.IsZero() {
-		lastCheckedTime := policy.Status.LastChecked.Time
-		timeSinceLastCheck := time.Since(lastCheckedTime)
-		if timeSinceLastCheck < interval {
-			remaining := interval - timeSinceLastCheck
-			logger.Info("Requeueing after remaining interval", "remaining", remaining)
-			return ctrl.Result{RequeueAfter: remaining}, nil
-		}
-	}
+	// if !policy.Status.LastChecked.IsZero() {
+	// 	lastCheckedTime := policy.Status.LastChecked.Time
+	// 	timeSinceLastCheck := time.Since(lastCheckedTime)
+	// 	if timeSinceLastCheck < interval {
+	// 		remaining := interval - timeSinceLastCheck
+	// 		logger.Info("Requeueing after remaining interval", "remaining", remaining)
+	// 		return ctrl.Result{RequeueAfter: remaining}, nil
+	// 	}
+	// }
 
 	// If no lastChecked or interval has passed, proceed and requeue after full interval
-	logger.Info("Requeueing after full interval", "interval", interval)
-	return ctrl.Result{RequeueAfter: interval}, nil
+	// logger.Info("Requeueing after full interval", "interval", interval)
+	return ctrl.Result{RequeueAfter: parseInterval(policy.Spec.CheckInterval)}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -455,4 +376,57 @@ func resolveLatestAMI(ctx context.Context, ssmClient *ssm.Client, amiType types.
 	}
 
 	return amiMetadata.ImageID, amiMetadata.ReleaseVersion, nil
+}
+
+func (r *NodeGroupUpgradePolicyReconciler) processUpgrade(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, currentRelease, latestRelease string, eksClient *eks.Client) error {
+	logger := logf.FromContext(ctx)
+
+	now := float64(time.Now().Unix())
+	metrics.LastCheckedTimestamp.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(now)
+
+	if currentRelease != latestRelease {
+		logger.Info("Nodegroup is outdated", "current", currentRelease, "latest", latestRelease)
+		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
+		metrics.OutdatedNodeGroups.WithLabelValues(policy.Spec.ClusterName).Inc()
+
+		policy.Status.TargetAmi = latestRelease
+
+		if policy.Spec.AutoUpgrade {
+			logger.Info("AutoUpgrade enabled, initiating update")
+			_, err := eksClient.UpdateNodegroupVersion(ctx, &eks.UpdateNodegroupVersionInput{
+				ClusterName:   &policy.Spec.ClusterName,
+				NodegroupName: &policy.Spec.NodeGroupName,
+			})
+			policy.Status.LastUpgradeAttempt = metav1.Now()
+
+			if err != nil {
+				logger.Error(err, "Failed to initiate nodegroup update")
+				policy.Status.UpgradeStatus = UpgradeStatusFailed
+				SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UpgradeFailed", "Failed to upgrade node group.")
+				metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "failed").Inc()
+			} else {
+				policy.Status.UpgradeStatus = UpgradeStatusInProgress
+				SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeInitiated", "Upgrade initiated.")
+				metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "success").Inc()
+			}
+		} else {
+			logger.Info("AutoUpgrade disabled, skipping upgrade")
+			policy.Status.UpgradeStatus = UpgradeStatusSkipped
+			SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UpgradeSkipped", "AutoUpgrade disabled.")
+			SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionFalse, "OutdatedAMI", "Node group is outdated.")
+			metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "skipped").Inc()
+		}
+	} else {
+		logger.Info("Nodegroup is compliant", "version", latestRelease)
+		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(1)
+		policy.Status.TargetAmi = latestRelease
+		policy.Status.UpgradeStatus = UpgradeStatusSucceeded
+		SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeSucceeded", "Node group is up-to-date.")
+		SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpToDate", "Node group is using latest AMI.")
+	}
+
+	policy.Status.LastChecked = metav1.Now()
+	policy.Status.CurrentAmi = currentRelease
+
+	return r.Status().Update(ctx, policy)
 }
