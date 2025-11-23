@@ -88,36 +88,10 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Handle deletion and finalizer cleanup
-	if !policy.ObjectMeta.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(&policy, nodeGroupFinalizer) {
-			logger.Info("Handling finalizer cleanup for NodeGroupUpgradePolicy")
-
-			// Emit metric
-			metrics.DeletedPolicies.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Inc()
-
-			// Emit Kubernetes event
-			r.Recorder.Event(&policy, corev1.EventTypeNormal, "FinalizerCleanup", "Cleanup completed before deletion")
-
-			// Log audit info
-			logger.Info("Finalizer cleanup completed", "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
-
-			controllerutil.RemoveFinalizer(&policy, nodeGroupFinalizer)
-			if err := r.Update(ctx, &policy); err != nil {
-				logger.Error(err, "failed to remove finalizer")
-				return ctrl.Result{}, err
-			}
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// Add finalizer if not present
-	if !controllerutil.ContainsFinalizer(&policy, nodeGroupFinalizer) {
-		controllerutil.AddFinalizer(&policy, nodeGroupFinalizer)
-		if err := r.Update(ctx, &policy); err != nil {
-			logger.Error(err, "failed to add finalizer")
-			return ctrl.Result{}, err
-		}
+	// Finalizer handling
+	done, err := r.handleFinalizer(ctx, &policy, nodeGroupFinalizer)
+	if done || err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Scheduling checks
@@ -480,4 +454,34 @@ func parseInterval(intervalStr string) time.Duration {
 		return 24 * time.Hour
 	}
 	return interval
+}
+
+func (r *NodeGroupUpgradePolicyReconciler) handleFinalizer(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, finalizerName string) (bool, error) {
+	logger := logf.FromContext(ctx)
+
+	// If deletion timestamp is set, handle cleanup
+	if !policy.ObjectMeta.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(policy, finalizerName) {
+			logger.Info("Handling finalizer cleanup for NodeGroupUpgradePolicy")
+			metrics.DeletedPolicies.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Inc()
+			r.Recorder.Event(policy, corev1.EventTypeNormal, "FinalizerCleanup", "Cleanup completed before deletion")
+			controllerutil.RemoveFinalizer(policy, finalizerName)
+			if err := r.Update(ctx, policy); err != nil {
+				logger.Error(err, "Failed to remove finalizer")
+				return true, err
+			}
+		}
+		return true, nil // Done with reconciliation
+	}
+
+	// Add finalizer if not present
+	if !controllerutil.ContainsFinalizer(policy, finalizerName) {
+		controllerutil.AddFinalizer(policy, finalizerName)
+		if err := r.Update(ctx, policy); err != nil {
+			logger.Error(err, "Failed to add finalizer")
+			return true, err
+		}
+	}
+
+	return false, nil // Continue reconciliation
 }
