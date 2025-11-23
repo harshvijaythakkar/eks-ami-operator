@@ -36,6 +36,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	// "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/eks/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/smithy-go"
 
@@ -115,112 +116,29 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 
 	// Use clients
 	eksClient := clients.EKS
-	ssmClient := clients.SSM
+	// ssmClient := clients.SSM
 
 	// Describe the node group to get current AMI and other metadata
-	ngOutput, err := retryDescribeNodegroup(ctx, eksClient, &eks.DescribeNodegroupInput{
-		ClusterName:   &policy.Spec.ClusterName,
-		NodegroupName: &policy.Spec.NodeGroupName,
-	})
-
+	ngOutput, err := describeNodegroup(ctx, clients.EKS, policy.Spec.ClusterName, policy.Spec.NodeGroupName)
 	if err != nil {
-		var apiErr smithy.APIError
-		if errors.As(err, &apiErr) && (apiErr.ErrorCode() == "ResourceNotFoundException" || apiErr.ErrorCode() == "InvalidParameterException") {
-			logger.Info("Skipping reconciliation due to permanent nodegroup error", "errorCode", apiErr.ErrorCode(), "nodegroupName", policy.Spec.NodeGroupName)
-
-			// Requeue after a longer interval to retry later in case the config is fixed
-			return ctrl.Result{RequeueAfter: 6 * time.Hour}, nil
-
-		}
-		logger.Error(err, "failed to describe node group")
-		interval, parseErr := time.ParseDuration(policy.Spec.CheckInterval)
-		if parseErr != nil {
-			interval = 24 * time.Hour
-		}
-		return ctrl.Result{RequeueAfter: interval}, nil
+		return ctrl.Result{RequeueAfter: parseInterval(policy.Spec.CheckInterval)}, nil
 	}
 
 	// Extract current AMI type (for managed node groups, this is usually an enum like AL2_x86_64)
-	// currentAmi := ngOutput.Nodegroup.AmiType
 	amiType := ngOutput.Nodegroup.AmiType
 	releaseVersion := aws.ToString(ngOutput.Nodegroup.ReleaseVersion)
 	logger.Info("Nodegroup metadata", "amiType", amiType, "releaseVersion", releaseVersion)
 
 	// Fetch latest recommended AMI for the cluster version
-	// Step 1: Get EKS cluster version
-	clusterOutput, err := eksClient.DescribeCluster(ctx, &eks.DescribeClusterInput{
-		Name: &policy.Spec.ClusterName,
-	})
+	eksVersion, err := describeCluster(ctx, clients.EKS, policy.Spec.ClusterName)
 	if err != nil {
-		logger.Error(err, "failed to describe EKS cluster")
-		interval, err := time.ParseDuration(policy.Spec.CheckInterval)
-		return ctrl.Result{RequeueAfter: interval}, err
+		return ctrl.Result{RequeueAfter: parseInterval(policy.Spec.CheckInterval)}, err
 	}
 
-	eksVersion := *clusterOutput.Cluster.Version
-	eksVersion = strings.TrimPrefix(eksVersion, "v") // SSM expects version without 'v'
-
-	// Step 2: Build dynamic SSM parameter path
-	var ssmPath string
-	switch amiType {
-	case "AL2_x86_64":
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion)
-	case "AL2_ARM_64":
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2-arm64/recommended", eksVersion)
-	case "AL2023_x86_64_STANDARD":
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended", eksVersion)
-	case "AL2023_ARM_64_STANDARD":
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/arm64/standard/recommended", eksVersion)
-	case "CUSTOM":
-		logger.Info("Custom AMI detected, skipping SSM lookup")
-		// For custom AMIs, we might want to skip or handle differently
-		// For now, we'll just log and continue
-		return ctrl.Result{}, nil
-	default:
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion)
-	}
-	logger.Info("Using SSM path", "ssmPath", ssmPath)
-
-	// Step 3: Fetch latest recommended AMI from SSM
-	ssmOutput, err := retryGetParameter(ctx, ssmClient, &ssm.GetParameterInput{
-		Name:           &ssmPath,
-		WithDecryption: aws.Bool(false),
-	})
-
+	latestAmi, latestReleaseVersion, err := resolveLatestAMI(ctx, clients.SSM, ngOutput.Nodegroup.AmiType, eksVersion)
 	if err != nil {
-		var apiErr smithy.APIError
-		if errors.As(err, &apiErr) && (apiErr.ErrorCode() == "ParameterNotFound" || apiErr.ErrorCode() == "InvalidParameter") {
-			logger.Info("Skipping reconciliation due to permanent ssm error", "errorCode", apiErr.ErrorCode(), "ssmPath", ssmPath)
-
-			// Requeue after a longer interval to retry later in case the config is fixed
-			return ctrl.Result{RequeueAfter: 6 * time.Hour}, nil
-		}
-		logger.Error(err, "failed to get recommended AMI from SSM")
-		interval, parseErr := time.ParseDuration(policy.Spec.CheckInterval)
-		if parseErr != nil {
-			interval = 24 * time.Hour
-		}
-		return ctrl.Result{RequeueAfter: interval}, nil
+		return ctrl.Result{RequeueAfter: parseInterval(policy.Spec.CheckInterval)}, nil
 	}
-
-	// latestAmi := *ssmOutput.Parameter.Value
-
-	// Step 4: Parse JSON from SSM parameter
-	var amiMetadata struct {
-		ImageID        string `json:"image_id"`
-		ReleaseVersion string `json:"release_version"`
-	}
-	if err := json.Unmarshal([]byte(*ssmOutput.Parameter.Value), &amiMetadata); err != nil {
-		logger.Error(err, "failed to parse SSM parameter JSON")
-		interval, parseErr := time.ParseDuration(policy.Spec.CheckInterval)
-		if parseErr != nil {
-			interval = 24 * time.Hour
-		}
-		return ctrl.Result{RequeueAfter: interval}, err
-	}
-
-	latestReleaseVersion := amiMetadata.ReleaseVersion
-	latestAmi := amiMetadata.ImageID
 
 	logger.Info("Fetched latest AMI metadata", "latestAmi", latestAmi, "latestReleaseVersion", latestReleaseVersion)
 
@@ -484,4 +402,57 @@ func (r *NodeGroupUpgradePolicyReconciler) handleFinalizer(ctx context.Context, 
 	}
 
 	return false, nil // Continue reconciliation
+}
+
+func describeNodegroup(ctx context.Context, eksClient *eks.Client, clusterName, nodegroupName string) (*eks.DescribeNodegroupOutput, error) {
+	return retryDescribeNodegroup(ctx, eksClient, &eks.DescribeNodegroupInput{
+		ClusterName:   &clusterName,
+		NodegroupName: &nodegroupName,
+	})
+}
+
+func describeCluster(ctx context.Context, eksClient *eks.Client, clusterName string) (string, error) {
+	clusterOutput, err := eksClient.DescribeCluster(ctx, &eks.DescribeClusterInput{
+		Name: &clusterName,
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(*clusterOutput.Cluster.Version, "v"), nil
+}
+
+func resolveLatestAMI(ctx context.Context, ssmClient *ssm.Client, amiType types.AMITypes, eksVersion string) (string, string, error) {
+	var ssmPath string
+	switch amiType {
+	case "AL2_x86_64":
+		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion)
+	case "AL2_ARM_64":
+		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2-arm64/recommended", eksVersion)
+	case "AL2023_x86_64_STANDARD":
+		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended", eksVersion)
+	case "AL2023_ARM_64_STANDARD":
+		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/arm64/standard/recommended", eksVersion)
+	case "CUSTOM":
+		return "", "", nil
+	default:
+		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion)
+	}
+
+	ssmOutput, err := retryGetParameter(ctx, ssmClient, &ssm.GetParameterInput{
+		Name:           &ssmPath,
+		WithDecryption: aws.Bool(false),
+	})
+	if err != nil {
+		return "", "", err
+	}
+
+	var amiMetadata struct {
+		ImageID        string `json:"image_id"`
+		ReleaseVersion string `json:"release_version"`
+	}
+	if err := json.Unmarshal([]byte(*ssmOutput.Parameter.Value), &amiMetadata); err != nil {
+		return "", "", err
+	}
+
+	return amiMetadata.ImageID, amiMetadata.ReleaseVersion, nil
 }
