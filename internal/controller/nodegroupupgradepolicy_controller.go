@@ -460,7 +460,7 @@ func (r *NodeGroupUpgradePolicyReconciler) handleFinalizer(ctx context.Context, 
 	logger := logf.FromContext(ctx)
 
 	// If deletion timestamp is set, handle cleanup
-	if !policy.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !policy.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(policy, finalizerName) {
 			logger.Info("Handling finalizer cleanup for NodeGroupUpgradePolicy")
 			metrics.DeletedPolicies.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Inc()
