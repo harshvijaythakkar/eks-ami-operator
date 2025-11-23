@@ -114,10 +114,6 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{RequeueAfter: parseInterval(policy.Spec.CheckInterval)}, err
 	}
 
-	// Use clients
-	eksClient := clients.EKS
-	// ssmClient := clients.SSM
-
 	// Describe the node group to get current AMI and other metadata
 	ngOutput, err := describeNodegroup(ctx, clients.EKS, policy.Spec.ClusterName, policy.Spec.NodeGroupName)
 	if err != nil {
