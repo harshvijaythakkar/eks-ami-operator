@@ -120,56 +120,24 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 		}
 	}
 
-	// Check if Paused
-	if policy.Spec.Paused {
-		logger.Info("Upgrade is paused, skipping reconciliation", "name", policy.Name)
-		return ctrl.Result{}, nil
-	}
-
-	// Skip reconciliation if startAfter is set and not yet reached
-	if policy.Spec.StartAfter != "" {
-		logger.Info("StartAfter check", "startAfter", policy.Spec.StartAfter)
-		startAfterTime, err := time.Parse(time.RFC3339, policy.Spec.StartAfter)
-		if err != nil {
-			logger.Error(err, "Invalid startAfter format")
-			return ctrl.Result{}, err
-		}
-		if time.Now().Before(startAfterTime) {
-			remaining := time.Until(startAfterTime)
-			logger.Info("StartAfter time not reached, skipping reconciliation", "startAfter", startAfterTime, "remaining", remaining)
-			return ctrl.Result{RequeueAfter: remaining}, nil
-		}
-	}
-
-	minInterval := 6 * time.Hour
-	if !policy.Status.LastUpgradeAttempt.IsZero() {
-		lastAttempt := policy.Status.LastUpgradeAttempt.Time
-		timeSinceLastAttempt := time.Since(lastAttempt)
-		if timeSinceLastAttempt < minInterval {
-			remaining := minInterval - timeSinceLastAttempt
-			logger.Info("Last upgrade attempt was too recent, skipping", "lastAttempt", lastAttempt, "remaining", remaining)
-			return ctrl.Result{RequeueAfter: remaining}, nil
-		}
-	}
-
-	// Load AWS configuration (uses default credentials chain — can be IRSA in-cluster)
-	// cfg, err := config.LoadDefaultConfig(ctx)
-	// if err != nil {
-	// 	logger.Error(err, "unable to load AWS config")
-	// 	return ctrl.Result{}, err
-	// }
-
-	// Create AWS clients using region from CRD
-	clients, err := awsclient.NewAWSClients(ctx, policy.Spec.Region)
+	// Scheduling checks
+	skip, requeueAfter, err := shouldSkip(&policy)
 	if err != nil {
-		logger.Error(err, "unable to create AWS clients")
-		interval, err := time.ParseDuration(policy.Spec.CheckInterval)
-		return ctrl.Result{RequeueAfter: interval}, err
+		logger.Error(err, "Error in scheduling checks")
+		return ctrl.Result{}, err
 	}
 
-	// // Create AWS service clients
-	// eksClient := eks.NewFromConfig(cfg)
-	// ssmClient := ssm.NewFromConfig(cfg)
+	if skip {
+		logger.Info("Skipping reconciliation based on scheduling logic")
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
+
+	// AWS clients
+	clients, err := getAWSClients(ctx, policy.Spec.Region)
+	if err != nil {
+		logger.Error(err, "Unable to create AWS clients")
+		return ctrl.Result{RequeueAfter: parseInterval(policy.Spec.CheckInterval)}, err
+	}
 
 	// Use clients
 	eksClient := clients.EKS
@@ -470,4 +438,46 @@ func retryGetParameter(ctx context.Context, ssmClient *ssm.Client, input *ssm.Ge
 
 	err := backoff.Retry(operation, expBackoff)
 	return output, err
+}
+
+// shouldSkip checks if reconciliation should be skipped based on Paused, StartAfter, and minInterval logic.
+func shouldSkip(policy *eksv1alpha1.NodeGroupUpgradePolicy) (bool, time.Duration, error) {
+	if policy.Spec.Paused {
+		return true, 0, nil
+	}
+
+	if policy.Spec.StartAfter != "" {
+		startAfterTime, err := time.Parse(time.RFC3339, policy.Spec.StartAfter)
+		if err != nil {
+			return false, 0, fmt.Errorf("invalid StartAfter format: %w", err)
+		}
+		if time.Now().Before(startAfterTime) {
+			return true, time.Until(startAfterTime), nil
+		}
+	}
+
+	minInterval := 6 * time.Hour
+	if !policy.Status.LastUpgradeAttempt.IsZero() {
+		lastAttempt := policy.Status.LastUpgradeAttempt.Time
+		timeSinceLastAttempt := time.Since(lastAttempt)
+		if timeSinceLastAttempt < minInterval {
+			return true, minInterval - timeSinceLastAttempt, nil
+		}
+	}
+
+	return false, 0, nil
+}
+
+// getAWSClients creates AWS clients for EKS and SSM using the region from the CRD.
+func getAWSClients(ctx context.Context, region string) (*awsclient.AWSClients, error) {
+	return awsclient.NewAWSClients(ctx, region)
+}
+
+// parseInterval safely parses the CheckInterval string, defaults to 24h if invalid.
+func parseInterval(intervalStr string) time.Duration {
+	interval, err := time.ParseDuration(intervalStr)
+	if err != nil {
+		return 24 * time.Hour
+	}
+	return interval
 }
