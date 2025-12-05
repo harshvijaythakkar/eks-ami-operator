@@ -16,7 +16,7 @@ const NodeGroupFinalizer = "nodegroupupgradepolicy.eks.aws.harsh.dev/finalizer"
 func HandleFinalizer(ctx context.Context, c client.Client, policy *eksv1alpha1.NodeGroupUpgradePolicy) (bool, error) {
 	logger := logf.FromContext(ctx)
 
-	if !policy.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !policy.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(policy, NodeGroupFinalizer) {
 			logger.Info("Handling finalizer cleanup for NodeGroupUpgradePolicy")
 			metrics.DeletedPolicies.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Inc()
