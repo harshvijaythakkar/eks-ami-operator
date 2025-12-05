@@ -18,36 +18,29 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"strings"
-	"time"
+	// "time"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	// "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	// "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/eks"
-	"github.com/aws/aws-sdk-go-v2/service/eks/types"
-	"github.com/aws/aws-sdk-go-v2/service/ssm"
-	"github.com/aws/smithy-go"
+	// "github.com/aws/aws-sdk-go-v2/service/eks"
 
-	// "github.com/aws/aws-sdk-go-v2/service/eks/types"
 	eksv1alpha1 "github.com/harshvijaythakkar/eks-ami-operator/api/v1alpha1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	// metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/harshvijaythakkar/eks-ami-operator/internal/awsutils"
+	"github.com/harshvijaythakkar/eks-ami-operator/internal/finalizer"
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/metrics"
+	"github.com/harshvijaythakkar/eks-ami-operator/internal/scheduler"
+	"github.com/harshvijaythakkar/eks-ami-operator/internal/upgrade"
 	"github.com/harshvijaythakkar/eks-ami-operator/pkg/awsclient"
-
-	"github.com/cenkalti/backoff/v4"
 )
 
 // NodeGroupUpgradePolicyReconciler reconciles a NodeGroupUpgradePolicy object
@@ -57,13 +50,13 @@ type NodeGroupUpgradePolicyReconciler struct {
 	Recorder record.EventRecorder
 }
 
-const (
-	UpgradeStatusFailed     = "Failed"
-	UpgradeStatusInProgress = "InProgress"
-	UpgradeStatusSucceeded  = "Succeeded"
-	UpgradeStatusOutdated   = "Outdated"
-	UpgradeStatusSkipped    = "Skipped"
-)
+// const (
+// 	UpgradeStatusFailed     = "Failed"
+// 	UpgradeStatusInProgress = "InProgress"
+// 	UpgradeStatusSucceeded  = "Succeeded"
+// 	UpgradeStatusOutdated   = "Outdated"
+// 	UpgradeStatusSkipped    = "Skipped"
+// )
 
 // +kubebuilder:rbac:groups=eks.aws.harsh.dev,resources=nodegroupupgradepolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=eks.aws.harsh.dev,resources=nodegroupupgradepolicies/status,verbs=get;update;patch
@@ -81,7 +74,7 @@ const (
 func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
 
-	const nodeGroupFinalizer = "nodegroupupgradepolicy.eks.aws.harsh.dev/finalizer"
+	// const nodeGroupFinalizer = "nodegroupupgradepolicy.eks.aws.harsh.dev/finalizer"
 
 	// Fetch the NodeGroupUpgradePolicy resource
 	var policy eksv1alpha1.NodeGroupUpgradePolicy
@@ -90,13 +83,14 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	// Finalizer handling
-	done, err := r.handleFinalizer(ctx, &policy, nodeGroupFinalizer)
+	// done, err := r.handleFinalizer(ctx, &policy, nodeGroupFinalizer)
+	done, err := finalizer.HandleFinalizer(ctx, r.Client, &policy)
 	if done || err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// Scheduling checks
-	skip, requeueAfter, err := shouldSkip(&policy)
+	skip, requeueAfter, err := scheduler.ShouldSkip(&policy)
 	if err != nil {
 		logger.Error(err, "Error in scheduling checks")
 		return ctrl.Result{}, err
@@ -111,13 +105,13 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	clients, err := getAWSClients(ctx, policy.Spec.Region)
 	if err != nil {
 		logger.Error(err, "Unable to create AWS clients")
-		return ctrl.Result{RequeueAfter: parseInterval(policy.Spec.CheckInterval)}, err
+		return ctrl.Result{RequeueAfter: scheduler.ParseInterval(policy.Spec.CheckInterval)}, err
 	}
 
 	// Describe the node group to get current AMI and other metadata
-	ngOutput, err := describeNodegroup(ctx, clients.EKS, policy.Spec.ClusterName, policy.Spec.NodeGroupName)
+	ngOutput, err := awsutils.DescribeNodegroup(ctx, clients.EKS, policy.Spec.ClusterName, policy.Spec.NodeGroupName)
 	if err != nil {
-		return ctrl.Result{RequeueAfter: parseInterval(policy.Spec.CheckInterval)}, nil
+		return ctrl.Result{RequeueAfter: scheduler.ParseInterval(policy.Spec.CheckInterval)}, nil
 	}
 
 	// Extract current AMI type (for managed node groups, this is usually an enum like AL2_x86_64)
@@ -126,14 +120,14 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	logger.Info("Nodegroup metadata", "amiType", amiType, "releaseVersion", releaseVersion)
 
 	// Fetch latest recommended AMI for the cluster version
-	eksVersion, err := describeCluster(ctx, clients.EKS, policy.Spec.ClusterName)
+	eksVersion, err := awsutils.DescribeCluster(ctx, clients.EKS, policy.Spec.ClusterName)
 	if err != nil {
-		return ctrl.Result{RequeueAfter: parseInterval(policy.Spec.CheckInterval)}, err
+		return ctrl.Result{RequeueAfter: scheduler.ParseInterval(policy.Spec.CheckInterval)}, err
 	}
 
-	latestAmi, latestReleaseVersion, err := resolveLatestAMI(ctx, clients.SSM, ngOutput.Nodegroup.AmiType, eksVersion)
+	latestAmi, latestReleaseVersion, err := awsutils.ResolveLatestAMI(ctx, clients.SSM, ngOutput.Nodegroup.AmiType, eksVersion)
 	if err != nil {
-		return ctrl.Result{RequeueAfter: parseInterval(policy.Spec.CheckInterval)}, nil
+		return ctrl.Result{RequeueAfter: scheduler.ParseInterval(policy.Spec.CheckInterval)}, nil
 	}
 
 	logger.Info("Fetched latest AMI metadata", "latestAmi", latestAmi, "latestReleaseVersion", latestReleaseVersion)
@@ -145,9 +139,10 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	metrics.OutdatedNodeGroups.WithLabelValues(policy.Spec.ClusterName).Set(0)
 
 	// Upgrade logic
-	err = r.processUpgrade(ctx, &policy, aws.ToString(ngOutput.Nodegroup.ReleaseVersion), latestReleaseVersion, clients.EKS)
+	// err = r.processUpgrade(ctx, &policy, aws.ToString(ngOutput.Nodegroup.ReleaseVersion), latestReleaseVersion, clients.EKS)
+	err = upgrade.ProcessUpgrade(ctx, r.Client, &policy, aws.ToString(ngOutput.Nodegroup.ReleaseVersion), latestReleaseVersion, clients.EKS)
 	if err != nil {
-		return ctrl.Result{RequeueAfter: parseInterval(policy.Spec.CheckInterval)}, err
+		return ctrl.Result{RequeueAfter: scheduler.ParseInterval(policy.Spec.CheckInterval)}, err
 	}
 
 	// Check if enough time has passed since lastChecked
@@ -163,7 +158,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 
 	// If no lastChecked or interval has passed, proceed and requeue after full interval
 	// logger.Info("Requeueing after full interval", "interval", interval)
-	return ctrl.Result{RequeueAfter: parseInterval(policy.Spec.CheckInterval)}, nil
+	return ctrl.Result{RequeueAfter: scheduler.ParseInterval(policy.Spec.CheckInterval)}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -194,235 +189,90 @@ func (r *NodeGroupUpgradePolicyReconciler) SetupWithManager(mgr ctrl.Manager) er
 //     return backoff.Retry(operation, expBackoff)
 // }
 
-func retryDescribeNodegroup(ctx context.Context, eksClient *eks.Client, input *eks.DescribeNodegroupInput) (*eks.DescribeNodegroupOutput, error) {
-	var output *eks.DescribeNodegroupOutput
-
-	operation := func() error {
-		var err error
-		output, err = eksClient.DescribeNodegroup(ctx, input)
-		if err != nil {
-			var apiErr smithy.APIError
-			if errors.As(err, &apiErr) {
-				switch apiErr.ErrorCode() {
-				case "ResourceNotFoundException", "InvalidParameterException":
-					logf.FromContext(ctx).Error(err, "Permanent error during DescribeNodegroup, skipping retries", "errorCode", apiErr.ErrorCode(), "clusterName", *input.ClusterName, "nodegroupName", *input.NodegroupName)
-					// Return backoff.Permanent to stop retrying
-					return backoff.Permanent(err)
-				}
-			}
-		}
-		return err
-	}
-
-	expBackoff := backoff.NewExponentialBackOff()
-	expBackoff.InitialInterval = 2 * time.Second
-	expBackoff.MaxElapsedTime = 30 * time.Second
-
-	err := backoff.Retry(operation, expBackoff)
-	return output, err
-}
-
-func retryGetParameter(ctx context.Context, ssmClient *ssm.Client, input *ssm.GetParameterInput) (*ssm.GetParameterOutput, error) {
-	var output *ssm.GetParameterOutput
-
-	operation := func() error {
-		var err error
-		output, err = ssmClient.GetParameter(ctx, input)
-		if err != nil {
-			var apiErr smithy.APIError
-			if errors.As(err, &apiErr) {
-				switch apiErr.ErrorCode() {
-				case "ParameterNotFound", "InvalidParameter":
-					logf.FromContext(ctx).Error(err, "Permanent error during GetParameter, skipping retries", "errorCode", apiErr.ErrorCode(), "parameterName", *input.Name)
-					return backoff.Permanent(err)
-				}
-			}
-		}
-		return err
-	}
-
-	expBackoff := backoff.NewExponentialBackOff()
-	expBackoff.InitialInterval = 2 * time.Second
-	expBackoff.MaxElapsedTime = 30 * time.Second
-
-	err := backoff.Retry(operation, expBackoff)
-	return output, err
-}
-
-// shouldSkip checks if reconciliation should be skipped based on Paused, StartAfter, and minInterval logic.
-func shouldSkip(policy *eksv1alpha1.NodeGroupUpgradePolicy) (bool, time.Duration, error) {
-	if policy.Spec.Paused {
-		return true, 0, nil
-	}
-
-	if policy.Spec.StartAfter != "" {
-		startAfterTime, err := time.Parse(time.RFC3339, policy.Spec.StartAfter)
-		if err != nil {
-			return false, 0, fmt.Errorf("invalid StartAfter format: %w", err)
-		}
-		if time.Now().Before(startAfterTime) {
-			return true, time.Until(startAfterTime), nil
-		}
-	}
-
-	minInterval := 6 * time.Hour
-	if !policy.Status.LastUpgradeAttempt.IsZero() {
-		lastAttempt := policy.Status.LastUpgradeAttempt.Time
-		timeSinceLastAttempt := time.Since(lastAttempt)
-		if timeSinceLastAttempt < minInterval {
-			return true, minInterval - timeSinceLastAttempt, nil
-		}
-	}
-
-	return false, 0, nil
-}
-
 // getAWSClients creates AWS clients for EKS and SSM using the region from the CRD.
 func getAWSClients(ctx context.Context, region string) (*awsclient.AWSClients, error) {
 	return awsclient.NewAWSClients(ctx, region)
 }
 
-// parseInterval safely parses the CheckInterval string, defaults to 24h if invalid.
-func parseInterval(intervalStr string) time.Duration {
-	interval, err := time.ParseDuration(intervalStr)
-	if err != nil {
-		return 24 * time.Hour
-	}
-	return interval
-}
+// func (r *NodeGroupUpgradePolicyReconciler) handleFinalizer(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, finalizerName string) (bool, error) {
+// 	logger := logf.FromContext(ctx)
 
-func (r *NodeGroupUpgradePolicyReconciler) handleFinalizer(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, finalizerName string) (bool, error) {
-	logger := logf.FromContext(ctx)
+// 	// If deletion timestamp is set, handle cleanup
+// 	if !policy.DeletionTimestamp.IsZero() {
+// 		if controllerutil.ContainsFinalizer(policy, finalizerName) {
+// 			logger.Info("Handling finalizer cleanup for NodeGroupUpgradePolicy")
+// 			metrics.DeletedPolicies.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Inc()
+// 			r.Recorder.Event(policy, corev1.EventTypeNormal, "FinalizerCleanup", "Cleanup completed before deletion")
+// 			controllerutil.RemoveFinalizer(policy, finalizerName)
+// 			if err := r.Update(ctx, policy); err != nil {
+// 				logger.Error(err, "Failed to remove finalizer")
+// 				return true, err
+// 			}
+// 		}
+// 		return true, nil // Done with reconciliation
+// 	}
 
-	// If deletion timestamp is set, handle cleanup
-	if !policy.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(policy, finalizerName) {
-			logger.Info("Handling finalizer cleanup for NodeGroupUpgradePolicy")
-			metrics.DeletedPolicies.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Inc()
-			r.Recorder.Event(policy, corev1.EventTypeNormal, "FinalizerCleanup", "Cleanup completed before deletion")
-			controllerutil.RemoveFinalizer(policy, finalizerName)
-			if err := r.Update(ctx, policy); err != nil {
-				logger.Error(err, "Failed to remove finalizer")
-				return true, err
-			}
-		}
-		return true, nil // Done with reconciliation
-	}
+// 	// Add finalizer if not present
+// 	if !controllerutil.ContainsFinalizer(policy, finalizerName) {
+// 		controllerutil.AddFinalizer(policy, finalizerName)
+// 		if err := r.Update(ctx, policy); err != nil {
+// 			logger.Error(err, "Failed to add finalizer")
+// 			return true, err
+// 		}
+// 	}
 
-	// Add finalizer if not present
-	if !controllerutil.ContainsFinalizer(policy, finalizerName) {
-		controllerutil.AddFinalizer(policy, finalizerName)
-		if err := r.Update(ctx, policy); err != nil {
-			logger.Error(err, "Failed to add finalizer")
-			return true, err
-		}
-	}
+// 	return false, nil // Continue reconciliation
+// }
 
-	return false, nil // Continue reconciliation
-}
+// func (r *NodeGroupUpgradePolicyReconciler) processUpgrade(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, currentRelease, latestRelease string, eksClient *eks.Client) error {
+// 	logger := logf.FromContext(ctx)
 
-func describeNodegroup(ctx context.Context, eksClient *eks.Client, clusterName, nodegroupName string) (*eks.DescribeNodegroupOutput, error) {
-	return retryDescribeNodegroup(ctx, eksClient, &eks.DescribeNodegroupInput{
-		ClusterName:   &clusterName,
-		NodegroupName: &nodegroupName,
-	})
-}
+// 	now := float64(time.Now().Unix())
+// 	metrics.LastCheckedTimestamp.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(now)
 
-func describeCluster(ctx context.Context, eksClient *eks.Client, clusterName string) (string, error) {
-	clusterOutput, err := eksClient.DescribeCluster(ctx, &eks.DescribeClusterInput{
-		Name: &clusterName,
-	})
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimPrefix(*clusterOutput.Cluster.Version, "v"), nil
-}
+// 	if currentRelease != latestRelease {
+// 		logger.Info("Nodegroup is outdated", "current", currentRelease, "latest", latestRelease)
+// 		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
+// 		metrics.OutdatedNodeGroups.WithLabelValues(policy.Spec.ClusterName).Inc()
 
-func resolveLatestAMI(ctx context.Context, ssmClient *ssm.Client, amiType types.AMITypes, eksVersion string) (string, string, error) {
-	var ssmPath string
-	switch amiType {
-	case "AL2_x86_64":
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion)
-	case "AL2_ARM_64":
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2-arm64/recommended", eksVersion)
-	case "AL2023_x86_64_STANDARD":
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended", eksVersion)
-	case "AL2023_ARM_64_STANDARD":
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/arm64/standard/recommended", eksVersion)
-	case "CUSTOM":
-		return "", "", nil
-	default:
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion)
-	}
+// 		policy.Status.TargetAmi = latestRelease
 
-	ssmOutput, err := retryGetParameter(ctx, ssmClient, &ssm.GetParameterInput{
-		Name:           &ssmPath,
-		WithDecryption: aws.Bool(false),
-	})
-	if err != nil {
-		return "", "", err
-	}
+// 		if policy.Spec.AutoUpgrade {
+// 			logger.Info("AutoUpgrade enabled, initiating update")
+// 			_, err := eksClient.UpdateNodegroupVersion(ctx, &eks.UpdateNodegroupVersionInput{
+// 				ClusterName:   &policy.Spec.ClusterName,
+// 				NodegroupName: &policy.Spec.NodeGroupName,
+// 			})
+// 			policy.Status.LastUpgradeAttempt = metav1.Now()
 
-	var amiMetadata struct {
-		ImageID        string `json:"image_id"`
-		ReleaseVersion string `json:"release_version"`
-	}
-	if err := json.Unmarshal([]byte(*ssmOutput.Parameter.Value), &amiMetadata); err != nil {
-		return "", "", err
-	}
+// 			if err != nil {
+// 				logger.Error(err, "Failed to initiate nodegroup update")
+// 				policy.Status.UpgradeStatus = UpgradeStatusFailed
+// 				SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UpgradeFailed", "Failed to upgrade node group.")
+// 				metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "failed").Inc()
+// 			} else {
+// 				policy.Status.UpgradeStatus = UpgradeStatusInProgress
+// 				SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeInitiated", "Upgrade initiated.")
+// 				metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "success").Inc()
+// 			}
+// 		} else {
+// 			logger.Info("AutoUpgrade disabled, skipping upgrade")
+// 			policy.Status.UpgradeStatus = UpgradeStatusSkipped
+// 			SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UpgradeSkipped", "AutoUpgrade disabled.")
+// 			SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionFalse, "OutdatedAMI", "Node group is outdated.")
+// 			metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "skipped").Inc()
+// 		}
+// 	} else {
+// 		logger.Info("Nodegroup is compliant", "version", latestRelease)
+// 		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(1)
+// 		policy.Status.TargetAmi = latestRelease
+// 		policy.Status.UpgradeStatus = UpgradeStatusSucceeded
+// 		SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeSucceeded", "Node group is up-to-date.")
+// 		SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpToDate", "Node group is using latest AMI.")
+// 	}
 
-	return amiMetadata.ImageID, amiMetadata.ReleaseVersion, nil
-}
+// 	policy.Status.LastChecked = metav1.Now()
+// 	policy.Status.CurrentAmi = currentRelease
 
-func (r *NodeGroupUpgradePolicyReconciler) processUpgrade(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, currentRelease, latestRelease string, eksClient *eks.Client) error {
-	logger := logf.FromContext(ctx)
-
-	now := float64(time.Now().Unix())
-	metrics.LastCheckedTimestamp.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(now)
-
-	if currentRelease != latestRelease {
-		logger.Info("Nodegroup is outdated", "current", currentRelease, "latest", latestRelease)
-		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
-		metrics.OutdatedNodeGroups.WithLabelValues(policy.Spec.ClusterName).Inc()
-
-		policy.Status.TargetAmi = latestRelease
-
-		if policy.Spec.AutoUpgrade {
-			logger.Info("AutoUpgrade enabled, initiating update")
-			_, err := eksClient.UpdateNodegroupVersion(ctx, &eks.UpdateNodegroupVersionInput{
-				ClusterName:   &policy.Spec.ClusterName,
-				NodegroupName: &policy.Spec.NodeGroupName,
-			})
-			policy.Status.LastUpgradeAttempt = metav1.Now()
-
-			if err != nil {
-				logger.Error(err, "Failed to initiate nodegroup update")
-				policy.Status.UpgradeStatus = UpgradeStatusFailed
-				SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UpgradeFailed", "Failed to upgrade node group.")
-				metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "failed").Inc()
-			} else {
-				policy.Status.UpgradeStatus = UpgradeStatusInProgress
-				SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeInitiated", "Upgrade initiated.")
-				metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "success").Inc()
-			}
-		} else {
-			logger.Info("AutoUpgrade disabled, skipping upgrade")
-			policy.Status.UpgradeStatus = UpgradeStatusSkipped
-			SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UpgradeSkipped", "AutoUpgrade disabled.")
-			SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionFalse, "OutdatedAMI", "Node group is outdated.")
-			metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "skipped").Inc()
-		}
-	} else {
-		logger.Info("Nodegroup is compliant", "version", latestRelease)
-		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(1)
-		policy.Status.TargetAmi = latestRelease
-		policy.Status.UpgradeStatus = UpgradeStatusSucceeded
-		SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpgradeSucceeded", "Node group is up-to-date.")
-		SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionTrue, "UpToDate", "Node group is using latest AMI.")
-	}
-
-	policy.Status.LastChecked = metav1.Now()
-	policy.Status.CurrentAmi = currentRelease
-
-	return r.Status().Update(ctx, policy)
-}
+// 	return r.Status().Update(ctx, policy)
+// }
