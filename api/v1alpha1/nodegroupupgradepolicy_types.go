@@ -42,6 +42,15 @@ type NodeGroupUpgradePolicySpec struct {
 	AutoUpgrade   bool   `json:"autoUpgrade"`
 	Paused        bool   `json:"paused,omitempty"`
 	StartAfter    string `json:"startAfter,omitempty"` // RFC3339 timestamp
+
+	// +kubebuilder:validation:Optional
+	// A standard 5-field cron expression. Example: "0 2 * * *" (daily at 02:00)
+	ScheduleCron string `json:"scheduleCron,omitempty"`
+
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default:=UTC
+	// IANA timezone for cron evaluation. Example: "Asia/Kolkata"
+	ScheduleTimezone string `json:"scheduleTimezone,omitempty"`
 }
 
 // NodeGroupUpgradePolicyStatus defines the observed state of NodeGroupUpgradePolicy.
@@ -71,6 +80,10 @@ type NodeGroupUpgradePolicyStatus struct {
 	TargetAmi          string             `json:"targetAmi,omitempty"`
 	// +kubebuilder:validation:Enum=Failed;InProgress;Succeeded;Outdated;Skipped
 	UpgradeStatus string `json:"upgradeStatus,omitempty"`
+
+	// Scheduling observability
+	LastScheduledTime metav1.Time `json:"lastScheduledTime,omitempty"`
+	NextScheduledTime metav1.Time `json:"nextScheduledTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true

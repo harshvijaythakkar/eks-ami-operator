@@ -52,6 +52,14 @@ spec:
                 type: boolean
               region:
                 type: string
+              scheduleCron:
+                description: 'A standard 5-field cron expression. Example: "0 2 *
+                  * *" (daily at 02:00)'
+                type: string
+              scheduleTimezone:
+                default: UTC
+                description: 'IANA timezone for cron evaluation. Example: "Asia/Kolkata"'
+                type: string
               startAfter:
                 type: string
             required:
@@ -138,7 +146,14 @@ spec:
               lastChecked:
                 format: date-time
                 type: string
+              lastScheduledTime:
+                description: Scheduling observability
+                format: date-time
+                type: string
               lastUpgradeAttempt:
+                format: date-time
+                type: string
+              nextScheduledTime:
                 format: date-time
                 type: string
               targetAmi:

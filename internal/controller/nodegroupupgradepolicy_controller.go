@@ -18,7 +18,7 @@ package controller
 
 import (
 	"context"
-	// "time"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -33,7 +33,7 @@ import (
 	// "github.com/aws/aws-sdk-go-v2/service/eks"
 
 	eksv1alpha1 "github.com/harshvijaythakkar/eks-ami-operator/api/v1alpha1"
-	// metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/awsutils"
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/finalizer"
@@ -89,29 +89,46 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{}, err
 	}
 
-	// Scheduling checks
+	// Hard guards: paused / startAfter / min upgrade interval
 	skip, requeueAfter, err := scheduler.ShouldSkip(&policy)
 	if err != nil {
-		logger.Error(err, "Error in scheduling checks")
-		return ctrl.Result{}, err
+		// ShouldSkip errored -> compute cron-aware next delay anyway
+		nd := r.computeNextDelay(ctx, &policy)
+		logger.Error(err, "scheduler.ShouldSkip returned error; requeueing via schedule",
+			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
+		return ctrl.Result{RequeueAfter: nd}, err
 	}
 
 	if skip {
-		logger.Info("Skipping reconciliation based on scheduling logic")
-		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		// Respect skip decision (e.g., startAfter future); jitter to avoid herd
+		jittered := scheduler.Jitter(requeueAfter)
+		logger.Info("Skipping due to scheduling guard (paused/startAfter/minInterval)",
+			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", jittered)
+		return ctrl.Result{RequeueAfter: jittered}, nil
 	}
 
+	// Cron/interval decision — if not due, exit early without AWS work (with proper logging)
+	if nd, due := r.whenToRunNext(ctx, &policy); !due {
+		return ctrl.Result{RequeueAfter: nd}, nil
+	}
+
+	// Due now: proceed with logic
 	// AWS clients
 	clients, err := getAWSClients(ctx, policy.Spec.Region)
 	if err != nil {
-		logger.Error(err, "Unable to create AWS clients")
-		return ctrl.Result{RequeueAfter: scheduler.ParseInterval(policy.Spec.CheckInterval)}, err
+		nd := r.computeNextDelay(ctx, &policy)
+		logger.Error(err, "AWS client creation failed; requeueing via schedule",
+			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
+		return ctrl.Result{RequeueAfter: nd}, err
 	}
 
 	// Describe the node group to get current AMI and other metadata
 	ngOutput, err := awsutils.DescribeNodegroup(ctx, clients.EKS, policy.Spec.ClusterName, policy.Spec.NodeGroupName)
 	if err != nil {
-		return ctrl.Result{RequeueAfter: scheduler.ParseInterval(policy.Spec.CheckInterval)}, nil
+		nd := r.computeNextDelay(ctx, &policy)
+		logger.Error(err, "DescribeNodegroup failed; requeueing via schedule",
+			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
+		return ctrl.Result{RequeueAfter: nd}, nil
 	}
 
 	// Extract current AMI type (for managed node groups, this is usually an enum like AL2_x86_64)
@@ -122,12 +139,18 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	// Fetch latest recommended AMI for the cluster version
 	eksVersion, err := awsutils.DescribeCluster(ctx, clients.EKS, policy.Spec.ClusterName)
 	if err != nil {
-		return ctrl.Result{RequeueAfter: scheduler.ParseInterval(policy.Spec.CheckInterval)}, err
+		nd := r.computeNextDelay(ctx, &policy)
+		logger.Error(err, "DescribeCluster failed; requeueing via schedule",
+			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
+		return ctrl.Result{RequeueAfter: nd}, err
 	}
 
 	latestAmi, latestReleaseVersion, err := awsutils.ResolveLatestAMI(ctx, clients.SSM, ngOutput.Nodegroup.AmiType, eksVersion)
 	if err != nil {
-		return ctrl.Result{RequeueAfter: scheduler.ParseInterval(policy.Spec.CheckInterval)}, nil
+		nd := r.computeNextDelay(ctx, &policy)
+		logger.Error(err, "ResolveLatestAMI failed; requeueing via schedule",
+			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
+		return ctrl.Result{RequeueAfter: nd}, nil
 	}
 
 	logger.Info("Fetched latest AMI metadata", "latestAmi", latestAmi, "latestReleaseVersion", latestReleaseVersion)
@@ -142,7 +165,10 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	// err = r.processUpgrade(ctx, &policy, aws.ToString(ngOutput.Nodegroup.ReleaseVersion), latestReleaseVersion, clients.EKS)
 	err = upgrade.ProcessUpgrade(ctx, r.Client, &policy, aws.ToString(ngOutput.Nodegroup.ReleaseVersion), latestReleaseVersion, clients.EKS)
 	if err != nil {
-		return ctrl.Result{RequeueAfter: scheduler.ParseInterval(policy.Spec.CheckInterval)}, err
+		nd := r.computeNextDelay(ctx, &policy)
+		logger.Error(err, "processUpgrade failed; requeueing via schedule",
+			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
+		return ctrl.Result{RequeueAfter: nd}, err
 	}
 
 	// Check if enough time has passed since lastChecked
@@ -158,7 +184,20 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 
 	// If no lastChecked or interval has passed, proceed and requeue after full interval
 	// logger.Info("Requeueing after full interval", "interval", interval)
-	return ctrl.Result{RequeueAfter: scheduler.ParseInterval(policy.Spec.CheckInterval)}, nil
+
+	// After a successful run, set observable schedule for next time
+	nextDelay := r.computeNextDelay(ctx, &policy)
+	policy.Status.LastScheduledTime = metav1.Now()
+	policy.Status.NextScheduledTime = metav1.NewTime(time.Now().Add(nextDelay))
+	if uerr := r.Status().Update(ctx, &policy); uerr != nil {
+		logger.Error(uerr, "failed to update scheduled status after successful run",
+			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
+	}
+	logger.Info("Completed; requeueing for next schedule",
+		"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nextDelay)
+	return ctrl.Result{RequeueAfter: nextDelay}, nil
+
+	// return ctrl.Result{RequeueAfter: scheduler.ParseInterval(policy.Spec.CheckInterval)}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -276,3 +315,67 @@ func getAWSClients(ctx context.Context, region string) (*awsclient.AWSClients, e
 
 // 	return r.Status().Update(ctx, policy)
 // }
+
+// whenToRunNext computes the next delay and returns (delay, dueNow bool).
+// If dueNow = false -> it logs reason, sets metrics, updates status (best-effort), and returns a jittered delay.
+// If dueNow = true  -> logs reason and allows AWS work to proceed.
+func (r *NodeGroupUpgradePolicyReconciler) whenToRunNext(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy) (time.Duration, bool) {
+	logger := logf.FromContext(ctx)
+	now := time.Now()
+
+	delay, reason, err := scheduler.NextRun(now, &policy.Status.LastChecked, policy)
+	if err != nil {
+		// NextRun error means cron/timezone invalid → it already fell back to interval.
+		logger.Error(err, "scheduler.NextRun returned error; using fallback delay",
+			"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
+	}
+
+	// Jitter and metric
+	jittered := scheduler.Jitter(delay)
+
+	if jittered > 0 {
+		// Not due yet → update status (best-effort) & log reason
+		policy.Status.LastScheduledTime = metav1.Now()
+		policy.Status.NextScheduledTime = metav1.NewTime(now.Add(jittered))
+		if uerr := r.Status().Update(ctx, policy); uerr != nil {
+			logger.Error(uerr, "failed to update scheduled status",
+				"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
+		}
+
+		logger.Info("Not due yet; requeueing",
+			"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", jittered)
+		return jittered, false
+	}
+
+	// Due now
+	logger.Info("Due now; proceeding;",
+		"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
+	return 0, true
+}
+
+// computeNextDelay returns the next cron/interval-based delay with jitter,
+// logs the reason, and emits the metric. Used in all error branches and post-success.
+func (r *NodeGroupUpgradePolicyReconciler) computeNextDelay(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy) time.Duration {
+	logger := logf.FromContext(ctx)
+	now := time.Now()
+
+	delay, reason, err := scheduler.NextRun(now, &policy.Status.LastChecked, policy)
+	if err != nil {
+		// Keep going — NextRun returns interval fallback delay when cron/timezone invalid.
+		logger.Error(err, "scheduler.NextRun error while computing next delay",
+			"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
+	}
+
+	// If NextRun says “run now” (delay <= 0), use interval fallback to avoid tight loop.
+	if delay <= 0 {
+		delay = scheduler.ParseInterval(policy.Spec.CheckInterval)
+		// Make the reason explicit in logs: interval fallback used
+		reason = "interval-fallback-after-immediate"
+	}
+
+	jittered := scheduler.Jitter(delay)
+
+	logger.Info("Computed next delay",
+		"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", jittered)
+	return jittered
+}
