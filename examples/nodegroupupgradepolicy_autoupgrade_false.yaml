@@ -1,0 +1,12 @@
+apiVersion: eks.aws.harsh.dev/v1alpha1
+kind: NodeGroupUpgradePolicy
+metadata:
+  name: sample-ng-upgrade-autoupgrade-false
+  namespace: eks-ami-operator-system
+spec:
+  region: us-west-2
+  clusterName: my-eks-cluster
+  nodeGroupName: my-managed-nodegroup
+  checkInterval: 24h
+  paused: false
+  autoUpgrade: false

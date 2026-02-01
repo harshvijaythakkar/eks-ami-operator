@@ -1,0 +1,19 @@
+apiVersion: eks.aws.harsh.dev/v1alpha1
+kind: NodeGroupUpgradePolicy
+metadata:
+  name: sample-ng-upgrade-cron
+  namespace: eks-ami-operator-system
+spec:
+  region: us-west-2
+  clusterName: my-eks-cluster
+  nodeGroupName: my-managed-nodegroup
+
+  # Fallback interval if cron is omitted/invalid
+  checkInterval: 24h
+
+  # Run at 03:00 Mon–Fri in Asia/Kolkata (default is UTC if timezone omitted)
+  scheduleCron: "0 3 * * 1-5"
+  scheduleTimezone: "Asia/Kolkata"
+
+  paused: false
+  autoUpgrade: true
