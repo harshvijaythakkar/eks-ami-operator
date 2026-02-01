@@ -12,20 +12,21 @@ A Kubernetes operator to **automate and manage EKS managed node group AMI upgrad
 - [Overview](#overview)
 - [Features](#features)
 - [Prerequisites](#prerequisites)
-- [build--deploy](#build--deploy)
-- [quick-start-sample-crs](#quick-start-sample-crs)
-- [scheduling-semantics](#scheduling-semantics)
-- [metrics](#metrics)
-- [status--conditions](#status--conditions)
-- [security--rbac](#security--rbac)
-- [development](#development)
-- [roadmap](#roadmap)
-- [contributing](#contributing)
-- [license](#license)
+- [Build & Deploy](#build--deploy)
+- [Quick start (sample CRs)](#quick-start-sample-crs)
+- [Scheduling semantics](#scheduling-semantics)
+- [Metrics](#metrics)
+- [Status & Conditions](#status--conditions)
+- [Security & RBAC](#security--rbac)
+- [Development](#development)
+- [Troubleshooting](#troubleshooting)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
 
 ---
 
-## **Overview**
+## Overview
 
 `eks-ami-operator` keeps your **EKS managed node groups** aligned to the **latest recommended AMIs** (via AWS SSM) and can optionally trigger **managed upgrades** when out of date. It’s designed for **safety**, **clarity**, and **operational control**.
 
@@ -41,16 +42,16 @@ A Kubernetes operator to **automate and manage EKS managed node group AMI upgrad
 
 ## Features
 
-- **Dynamic AMI lookup (SSM)** by **AMI type** and **EKS cluster version**  
-- **AutoUpgrade** for hands‑off managed upgrades  
+- **Dynamic AMI lookup (SSM)** by **AMI type** and **EKS cluster version**
+- **AutoUpgrade** for hands‑off managed upgrades
 - **Scheduling**
   - `scheduleCron` + `scheduleTimezone` (**default = UTC** if timezone omitted)
   - Fallback `checkInterval` (Go duration)
   - **Precedence**: `paused` → `startAfter` → `scheduleCron` → `checkInterval`
-  - **Jitter** on requeues to avoid synchronized spikes
-- **Status & Conditions**: `UpgradeStatus`, `CurrentAmi`, `TargetAmi`, `LastChecked`,  
+  - **Jitter** on all future requeues to avoid synchronized spikes
+- **Status & Conditions**: `UpgradeStatus`, `CurrentAmi`, `TargetAmi`, `LastChecked`,
   `LastScheduledTime`, `NextScheduledTime`, plus standardized conditions
-- **Metrics** for compliance, attempts, timestamps, scheduler next run
+- **Metrics** for compliance, attempts, timestamps, and next scheduled run
 - **Robust retries** with **exponential backoff** (+ slight jitter)
 - **Finalizers** for safe deletion
 - **Refactored, testable structure** (`internal/` packages for scheduler, awsutils, upgrade, finalizer)
@@ -203,13 +204,52 @@ kubectl delete -f examples/nodegroupupgradepolicy_autoupgrade_true.yaml
 
 ## Metrics
 
-Exposed via Prometheus client:
+The controller exposes the following Prometheus metrics (names and labels match the code):
 
-- eks_ami_operator_compliance_status{cluster,nodegroup} – 1 compliant, 0 outdated
-- eks_ami_operator_upgrade_attempts_total{cluster,nodegroup,result} – counter (result = success|failed|skipped)
-- eks_ami_operator_last_checked_timestamp{cluster,nodegroup} – unix seconds (gauge)
-- eks_ami_operator_outdated_nodegroups{cluster} – number of outdated nodegroups in last check (gauge)
-- eks_ami_operator_next_run_seconds{cluster,nodegroup} – computed delay to next run (gauge)
+- eks_ami_operator_outdated_nodegroups (gauge) — number of node groups using outdated AMIs
+Labels: cluster
+
+- eks_ami_operator_upgrade_attempts_total (counter) — total AMI upgrade attempts
+Labels: cluster, nodegroup, result (success | failed | skipped)
+
+- eks_ami_operator_compliance_status (gauge) — compliance per node group (1 = compliant, 0 = not)
+Labels: cluster, nodegroup
+
+- eks_ami_operator_last_checked_timestamp_seconds (gauge) — Unix timestamp of the last compliance check
+Labels: cluster, nodegroup
+
+- eks_ami_operator_deleted_policies_total (counter) — total NodeGroupUpgradePolicy deletions
+Labels: cluster, nodegroup
+
+- eks_ami_operator_next_run_seconds (gauge) — computed delay until next scheduled reconcile
+Labels: cluster, nodegroup
+
+### Example PromQL queries
+
+- Outdated nodegroups by cluster:
+```
+sum by (cluster) (eks_ami_operator_outdated_nodegroups)
+```
+
+- Compliance status over time for a specific nodegroup:
+```
+eks_ami_operator_compliance_status{cluster="my-eks-cluster", nodegroup="my-managed-nodegroup"}
+```
+
+- Upgrade attempts by result (last 1h):
+```
+sum by (result) (increase(eks_ami_operator_upgrade_attempts_total[1h]))
+```
+
+- Last checked timestamp (most recent value):
+```
+max by (cluster, nodegroup) (eks_ami_operator_last_checked_timestamp_seconds)
+```
+
+- Time to next run:
+```
+max by (cluster, nodegroup) (eks_ami_operator_next_run_seconds)
+```
 
 ---
 

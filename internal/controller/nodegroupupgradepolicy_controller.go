@@ -330,8 +330,11 @@ func (r *NodeGroupUpgradePolicyReconciler) whenToRunNext(ctx context.Context, po
 			"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
 	}
 
-	// Jitter and metric
+	// Apply jitter and emit metric
 	jittered := scheduler.Jitter(delay)
+	metrics.NextRunSeconds.
+		WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).
+		Set(jittered.Seconds())
 
 	if jittered > 0 {
 		// Not due yet → update status (best-effort) & log reason
@@ -374,6 +377,11 @@ func (r *NodeGroupUpgradePolicyReconciler) computeNextDelay(ctx context.Context,
 	}
 
 	jittered := scheduler.Jitter(delay)
+
+	// Emit NextRunSeconds metric here too
+	metrics.NextRunSeconds.
+		WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).
+		Set(jittered.Seconds())
 
 	logger.Info("Computed next delay",
 		"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", jittered)
