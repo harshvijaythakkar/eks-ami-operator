@@ -92,8 +92,7 @@ func NextRun(now time.Time, lastChecked *metav1.Time, policy *eksv1alpha1.NodeGr
 		const eps = time.Nanosecond
 		next := schedule.Next(base.Add(-eps))
 
-		if next.Equal(base) {
-			// Exact boundary → run now
+		if next.Equal(base) || next.Sub(base) <= time.Second {
 			return 0, ReasonCron, nil
 		}
 		// Otherwise, a future boundary
