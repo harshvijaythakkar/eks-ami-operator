@@ -38,10 +38,20 @@ type NodeGroupUpgradePolicySpec struct {
 	ClusterName   string `json:"clusterName"`
 	NodeGroupName string `json:"nodeGroupName"`
 	Region        string `json:"region"`
-	CheckInterval string `json:"checkInterval"` // e.g., "24h"
-	AutoUpgrade   bool   `json:"autoUpgrade"`
-	Paused        bool   `json:"paused,omitempty"`
-	StartAfter    string `json:"startAfter,omitempty"` // RFC3339 timestamp
+
+	// Optional interval fallback (defaulted to 24h if omitted)
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default:=24h
+	CheckInterval string `json:"checkInterval"`
+
+	// +kubebuilder:validation:Optional
+	AutoUpgrade bool `json:"autoUpgrade"`
+
+	// +kubebuilder:validation:Optional
+	Paused bool `json:"paused,omitempty"`
+
+	// +kubebuilder:validation:Optional
+	StartAfter string `json:"startAfter,omitempty"` // RFC3339 timestamp
 
 	// +kubebuilder:validation:Optional
 	// A standard 5-field cron expression. Example: "0 2 * * *" (daily at 02:00)
@@ -124,9 +134,14 @@ var _ admission.CustomDefaulter = &NodeGroupUpgradePolicy{}
 func (r *NodeGroupUpgradePolicy) Default(_ context.Context, _ runtime.Object) error {
 	logf.Log.WithName("nodegroupupgradepolicy-default").Info("Applying defaults", "name", r.Name)
 
-	if r.Spec.CheckInterval == "" {
+	if r.Spec.ScheduleCron == "" && r.Spec.CheckInterval == "" {
 		r.Spec.CheckInterval = "24h"
 		logf.Log.WithName("nodegroupupgradepolicy-default").Info("Defaulted CheckInterval to 24h")
+	}
+
+	if r.Spec.ScheduleCron != "" && r.Spec.CheckInterval == "" {
+		r.Spec.ScheduleTimezone = "UTC"
+		logf.Log.WithName("nodegroupupgradepolicy-default").Info("Defaulted ScheduleTimezone to UTC")
 	}
 
 	return nil
