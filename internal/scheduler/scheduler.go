@@ -86,15 +86,18 @@ func NextRun(now time.Time, lastChecked *metav1.Time, policy *eksv1alpha1.NodeGr
 
 		// IMPORTANT: cron computed from "now", not lastChecked
 		base := now.In(loc)
-		// if lastChecked != nil && !lastChecked.IsZero() {
-		// 	// QF1008 fix: use promoted method on embedded time.Time instead of .Time.In(loc)
-		// 	base = lastChecked.In(loc)
-		// }
-		next := schedule.Next(base)
-		if now.In(loc).Before(next) {
-			return next.Sub(now.In(loc)), ReasonCron, nil
+		// IMPORTANT:
+		// schedule.Next(t) returns the first time *strictly after* t.
+		// To treat an exact boundary (e.g., 14:00:00) as "due now", query with a tiny epsilon before 'base'.
+		const eps = time.Nanosecond
+		next := schedule.Next(base.Add(-eps))
+
+		if next.Equal(base) {
+			// Exact boundary → run now
+			return 0, ReasonCron, nil
 		}
-		return 0, ReasonCron, nil // run now
+		// Otherwise, a future boundary
+		return next.Sub(base), ReasonCron, nil
 	}
 
 	// 2) Interval fallback
