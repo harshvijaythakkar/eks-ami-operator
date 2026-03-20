@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -147,6 +148,30 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 
 	latestAmi, latestReleaseVersion, err := awsutils.ResolveLatestAMI(ctx, clients.SSM, ngOutput.Nodegroup.AmiType, eksVersion)
 	if err != nil {
+		if errors.Is(err, awsutils.ErrAL2UnsupportedOnCluster) {
+			logger.Info("AL2 AMI not published for this EKS version; migration to AL2023 is required",
+				"cluster", policy.Spec.ClusterName,
+				"nodegroup", policy.Spec.NodeGroupName,
+				"eksVersion", eksVersion,
+				"amiType", ngOutput.Nodegroup.AmiType,
+			)
+
+			// Surface clear conditions & metrics
+			policy.Status.UpgradeStatus = "Skipped"
+			SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UnsupportedAMI",
+				"AL2 AMI is not available for this EKS version; create a new node group on AL2023 and migrate.")
+			SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UnsupportedAMI",
+				"AL2 AMI not published for this EKS version.")
+			metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
+			metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "skipped").Inc()
+
+			// Persist and requeue per schedule (not an error)
+			_ = r.Status().Update(ctx, &policy)
+			nd := r.computeNextDelay(ctx, &policy)
+			return ctrl.Result{RequeueAfter: nd}, nil
+		}
+
+		// Other errors -> normal schedule requeue
 		nd := r.computeNextDelay(ctx, &policy)
 		logger.Error(err, "ResolveLatestAMI failed; requeueing via schedule",
 			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)

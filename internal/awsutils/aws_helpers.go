@@ -22,6 +22,14 @@ import (
 // package-level RNG, seeded once
 var rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 
+// AL2UnsupportedMinorCutoff defines the EKS minor version at/after which AL2
+// optimized AMIs are not published by AWS (e.g., 1.33 => 33). Adjust if AWS policy changes.
+const AL2UnsupportedMinorCutoff = 33
+
+// ErrAL2UnsupportedOnCluster indicates the requested AL2 AMI type is not
+// published for the current EKS cluster version.
+var ErrAL2UnsupportedOnCluster = errors.New("al2 ami not published for this eks version")
+
 // DescribeNodegroup wraps retry logic.
 func DescribeNodegroup(ctx context.Context, eksClient *eks.Client, clusterName, nodegroupName string) (*eks.DescribeNodegroupOutput, error) {
 	return retryDescribeNodegroup(ctx, eksClient, &eks.DescribeNodegroupInput{
@@ -44,6 +52,14 @@ func DescribeCluster(ctx context.Context, eksClient *eks.Client, clusterName str
 // ResolveLatestAMI builds SSM path based on AMI type + EKS version, and returns (imageID, releaseVersion).
 func ResolveLatestAMI(ctx context.Context, ssmClient *ssm.Client, amiType types.AMITypes, eksVersion string) (string, string, error) {
 	var ssmPath string
+	isAL2 := amiType == types.AMITypesAl2X8664 || amiType == types.AMITypesAl2Arm64
+	minor, _ := eksMinor(eksVersion) // best-effort; if parse fails, minor == 0 and guards below won’t trigger
+
+	// Guard: AL2 is not published for newer EKS minors (e.g., >= 1.33).
+	if isAL2 && minor >= AL2UnsupportedMinorCutoff {
+		return "", "", ErrAL2UnsupportedOnCluster
+	}
+
 	switch amiType {
 	case "AL2_x86_64":
 		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion)
@@ -56,14 +72,27 @@ func ResolveLatestAMI(ctx context.Context, ssmClient *ssm.Client, amiType types.
 	case "CUSTOM":
 		return "", "", nil
 	default:
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion)
+		// Default path: for older minors (< cutoff), AL2; for newer minors (>= cutoff), prefer AL2023 x86_64 standard.
+		if minor >= AL2UnsupportedMinorCutoff {
+			ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended", eksVersion)
+		} else {
+			ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion)
+		}
 	}
 
-	ssmOutput, err := retryGetParameter(ctx, ssmClient, &ssm.GetParameterInput{
+	ssmInput := &ssm.GetParameterInput{
 		Name:           &ssmPath,
 		WithDecryption: aws.Bool(false),
-	})
+	}
+	ssmOutput, err := retryGetParameter(ctx, ssmClient, ssmInput)
 	if err != nil {
+		// If SSM returns ParameterNotFound and we're requesting AL2 for a newer minor, map to sentinel error.
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "ParameterNotFound" {
+			if isAL2 && minor >= AL2UnsupportedMinorCutoff {
+				return "", "", ErrAL2UnsupportedOnCluster
+			}
+		}
 		return "", "", err
 	}
 
