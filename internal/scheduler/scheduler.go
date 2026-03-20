@@ -9,6 +9,7 @@ import (
 
 	eksv1alpha1 "github.com/harshvijaythakkar/eks-ami-operator/api/v1alpha1"
 	cron "github.com/robfig/cron/v3"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // Reasons returned by NextRun for logging/metrics consistency.
@@ -65,7 +66,7 @@ func ParseInterval(intervalStr string) time.Duration {
 func NextRun(now time.Time, lastChecked *metav1.Time, policy *eksv1alpha1.NodeGroupUpgradePolicy) (time.Duration, string, error) {
 	// 1) Cron schedule (if provided)
 	if policy.Spec.ScheduleCron != "" {
-		// Default to UTC for predictability
+		// Default to UTC
 		loc := time.UTC
 		if tz := policy.Spec.ScheduleTimezone; tz != "" {
 			l, err := time.LoadLocation(tz)
@@ -75,6 +76,7 @@ func NextRun(now time.Time, lastChecked *metav1.Time, policy *eksv1alpha1.NodeGr
 				// If timezone invalid, fall back to interval but report error
 				return nextRunInterval(now, lastChecked, policy), ReasonInterval, fmt.Errorf("invalid scheduleTimezone: %w", err)
 			}
+			loc = l
 		}
 
 		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
@@ -84,18 +86,42 @@ func NextRun(now time.Time, lastChecked *metav1.Time, policy *eksv1alpha1.NodeGr
 			return nextRunInterval(now, lastChecked, policy), ReasonInterval, fmt.Errorf("invalid scheduleCron: %w", err)
 		}
 
-		// IMPORTANT: cron computed from "now", not lastChecked
 		base := now.In(loc)
-		// IMPORTANT:
-		// schedule.Next(t) returns the first time *strictly after* t.
-		// To treat an exact boundary (e.g., 14:00:00) as "due now", query with a tiny epsilon before 'base'.
-		const eps = time.Nanosecond
-		next := schedule.Next(base.Add(-eps))
 
-		if next.Equal(base) || next.Sub(base) <= time.Second {
+		// Tolerances
+		const earlyTolerance = 1 * time.Second // allow firing up to 1s *before* boundary
+		const lateTolerance = 5 * time.Second  // allow firing up to 5s  *after*  boundary
+		const eps = time.Nanosecond            // to handle "strictly after" semantics
+
+		// EARLY boundary: if we're just before the minute boundary
+		next := schedule.Next(base.Add(-eps))
+		logger := logf.Log.WithName("scheduler-debug")
+		logger.Info("cron-eval",
+			"now", now.UTC(), "loc", loc.String(),
+			"base", base,
+			"next", next, "nextDelta", next.Sub(base),
+			"cron", policy.Spec.ScheduleCron, "tz", policy.Spec.ScheduleTimezone,
+		)
+		if next.Equal(base) || next.Sub(base) <= earlyTolerance {
 			return 0, ReasonCron, nil
 		}
-		// Otherwise, a future boundary
+
+		// LATE boundary: if we're just *after* the minute boundary
+		// Trick to compute the previous occurrence: ask "next" from one minute earlier.
+		prev := schedule.Next(base.Add(-time.Minute)).In(loc)
+		// 'prev' is the cron time within the last minute window (if any).
+		logger.Info("cron-eval",
+			"now", now.UTC(), "loc", loc.String(),
+			"base", base,
+			"next", next, "nextDelta", next.Sub(base),
+			"prev", prev, "prevDelta", base.Sub(prev),
+			"cron", policy.Spec.ScheduleCron, "tz", policy.Spec.ScheduleTimezone,
+		)
+		if base.After(prev) && base.Sub(prev) <= lateTolerance {
+			return 0, ReasonCron, nil
+		}
+
+		// Otherwise: schedule to the next cron slot
 		return next.Sub(base), ReasonCron, nil
 	}
 
