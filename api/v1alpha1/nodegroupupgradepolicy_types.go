@@ -41,7 +41,7 @@ type NodeGroupUpgradePolicySpec struct {
 
 	// Optional interval fallback (defaulted to 24h if omitted)
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default:=24h
+	// +kubebuilder:default:="24h"
 	CheckInterval string `json:"checkInterval"`
 
 	// +kubebuilder:validation:Optional
@@ -58,7 +58,7 @@ type NodeGroupUpgradePolicySpec struct {
 	ScheduleCron string `json:"scheduleCron,omitempty"`
 
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default:=UTC
+	// +kubebuilder:default:="UTC"
 	// IANA timezone for cron evaluation. Example: "Asia/Kolkata"
 	ScheduleTimezone string `json:"scheduleTimezone,omitempty"`
 }

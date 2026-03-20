@@ -43,6 +43,8 @@ spec:
               autoUpgrade:
                 type: boolean
               checkInterval:
+                default: 24h
+                description: Optional interval fallback (defaulted to 24h if omitted)
                 type: string
               clusterName:
                 type: string
@@ -63,8 +65,6 @@ spec:
               startAfter:
                 type: string
             required:
-            - autoUpgrade
-            - checkInterval
             - clusterName
             - nodeGroupName
             - region
