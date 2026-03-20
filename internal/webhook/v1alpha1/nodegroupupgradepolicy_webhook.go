@@ -29,6 +29,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	cron "github.com/robfig/cron/v3"
 
 	"github.com/harshvijaythakkar/eks-ami-operator/pkg/awsclient"
 
@@ -65,6 +66,72 @@ type NodeGroupUpgradePolicyCustomValidator struct {
 
 var _ webhook.CustomValidator = &NodeGroupUpgradePolicyCustomValidator{}
 
+// ---- Shared validation helpers ----
+func (v *NodeGroupUpgradePolicyCustomValidator) validateCommonSpec(spec *eksv1alpha1.NodeGroupUpgradePolicySpec) error {
+	// Required fields
+	if spec.ClusterName == "" {
+		return fmt.Errorf("spec.clusterName must not be empty")
+	}
+	if spec.NodeGroupName == "" {
+		return fmt.Errorf("spec.nodeGroupName must not be empty")
+	}
+	if spec.Region == "" {
+		return fmt.Errorf("spec.region must not be empty")
+	}
+
+	// checkInterval (if provided) must be a valid Go duration
+	if spec.CheckInterval != "" {
+		if _, err := time.ParseDuration(spec.CheckInterval); err != nil {
+			return fmt.Errorf("spec.checkInterval must be a valid duration string (e.g., '24h'): %w", err)
+		}
+	}
+
+	// startAfter (if provided) must be RFC3339
+	if spec.StartAfter != "" {
+		if _, err := time.Parse(time.RFC3339, spec.StartAfter); err != nil {
+			return fmt.Errorf("spec.startAfter must be a valid RFC3339 timestamp: %w", err)
+		}
+	}
+
+	// scheduleTimezone (if provided) must be valid IANA
+	if tz := spec.ScheduleTimezone; tz != "" {
+		if _, err := time.LoadLocation(tz); err != nil {
+			return fmt.Errorf("spec.scheduleTimezone must be a valid IANA timezone: %w", err)
+		}
+	}
+
+	// scheduleCron (if provided) must be a valid 5-field cron expression
+	if spec.ScheduleCron != "" {
+		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+		if _, err := parser.Parse(spec.ScheduleCron); err != nil {
+			return fmt.Errorf("spec.scheduleCron is invalid (expected 5-field cron): %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (v *NodeGroupUpgradePolicyCustomValidator) validateRegion(ctx context.Context, region string) error {
+	clients, err := awsclient.NewAWSClients(ctx, region)
+	if err != nil {
+		nodegroupupgradepolicylog.Error(err, "failed to init AWS clients for region validation")
+		return fmt.Errorf("unable to validate spec.region: %w", err)
+	}
+	ec2Client := clients.EC2
+
+	resp, err := ec2Client.DescribeRegions(ctx, &ec2.DescribeRegionsInput{})
+	if err != nil {
+		return fmt.Errorf("unable to validate spec.region: %w", err)
+	}
+
+	for _, r := range resp.Regions {
+		if aws.ToString(r.RegionName) == region {
+			return nil
+		}
+	}
+	return fmt.Errorf("spec.region must be a valid AWS region")
+}
+
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type NodeGroupUpgradePolicy.
 func (v *NodeGroupUpgradePolicyCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	nodegroupupgradepolicy, ok := obj.(*eksv1alpha1.NodeGroupUpgradePolicy)
@@ -73,43 +140,13 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateCreate(ctx context.Conte
 	}
 	nodegroupupgradepolicylog.Info("Validation for NodeGroupUpgradePolicy upon creation", "name", nodegroupupgradepolicy.GetName())
 
-	if nodegroupupgradepolicy.Spec.ClusterName == "" {
-		return nil, fmt.Errorf("spec.clusterName must not be empty")
+	// Spec validations
+	if err := v.validateCommonSpec(&nodegroupupgradepolicy.Spec); err != nil {
+		return nil, err
 	}
-
-	if nodegroupupgradepolicy.Spec.NodeGroupName == "" {
-		return nil, fmt.Errorf("spec.nodeGroupName must not be empty")
-	}
-
-	if nodegroupupgradepolicy.Spec.Region == "" {
-		return nil, fmt.Errorf("spec.region must not be empty")
-	}
-
-	res, err := isValidAWSRegion(ctx, nodegroupupgradepolicy.Spec.Region)
-
-	if err != nil {
-		nodegroupupgradepolicylog.Error(err, "failed to validate AWS region")
-		return nil, fmt.Errorf("unable to validate spec.region: %w", err)
-	}
-
-	if !res {
-		return nil, fmt.Errorf("spec.region must be a valid AWS region")
-	}
-
-	if nodegroupupgradepolicy.Spec.AutoUpgrade && nodegroupupgradepolicy.Spec.CheckInterval == "" {
-		return nil, fmt.Errorf("spec.checkInterval must be set if autoUpgrade is true")
-	}
-
-	if nodegroupupgradepolicy.Spec.CheckInterval != "" {
-		if _, err := time.ParseDuration(nodegroupupgradepolicy.Spec.CheckInterval); err != nil {
-			return nil, fmt.Errorf("spec.checkInterval must be a valid duration string (e.g., '24h')")
-		}
-	}
-
-	if nodegroupupgradepolicy.Spec.StartAfter != "" {
-		if _, err := time.Parse(time.RFC3339, nodegroupupgradepolicy.Spec.StartAfter); err != nil {
-			return nil, fmt.Errorf("spec.startAfter must be a valid RFC3339 timestamp")
-		}
+	// Region validation via EC2
+	if err := v.validateRegion(ctx, nodegroupupgradepolicy.Spec.Region); err != nil {
+		return nil, err
 	}
 
 	return nil, nil
@@ -145,7 +182,8 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateUpdate(ctx context.Conte
 		return nil, fmt.Errorf("spec.region cannot be changed after creation")
 	}
 
-	if _, err := v.ValidateCreate(ctx, newObj); err != nil {
+	// Reuse create validations for the new spec (cron/timezone/etc.)
+	if err := v.validateCommonSpec(&newnodegroupupgradepolicy.Spec); err != nil {
 		return nil, err
 	}
 
@@ -163,26 +201,4 @@ func (v *NodeGroupUpgradePolicyCustomValidator) ValidateDelete(ctx context.Conte
 	// No delete restrictions for now
 
 	return nil, nil
-}
-
-// isValidAWSRegion checks if the given region is valid by querying EC2's DescribeRegions API
-func isValidAWSRegion(ctx context.Context, region string) (bool, error) {
-	clients, err := awsclient.NewAWSClients(ctx, region)
-	if err != nil {
-		return false, err
-	}
-	ec2Client := clients.EC2
-
-	resp, err := ec2Client.DescribeRegions(ctx, &ec2.DescribeRegionsInput{})
-	if err != nil {
-		return false, err
-	}
-
-	for _, r := range resp.Regions {
-		if aws.ToString(r.RegionName) == region {
-			return true, nil
-		}
-	}
-
-	return false, nil
 }
