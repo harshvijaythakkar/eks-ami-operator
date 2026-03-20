@@ -345,6 +345,7 @@ func getAWSClients(ctx context.Context, region string) (*awsclient.AWSClients, e
 // If dueNow = false -> it logs reason, sets metrics, updates status (best-effort), and returns the delay.
 //   - For cron:     delay is exact (no jitter).
 //   - For interval: delay is jittered.
+//
 // If dueNow = true  -> logs reason and allows AWS work to proceed.
 func (r *NodeGroupUpgradePolicyReconciler) whenToRunNext(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy) (time.Duration, bool) {
 	logger := logf.FromContext(ctx)
