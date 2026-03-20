@@ -39,7 +39,7 @@ func ShouldSkip(policy *eksv1alpha1.NodeGroupUpgradePolicy) (bool, time.Duration
 	minInterval := 6 * time.Hour
 	if !policy.Status.LastUpgradeAttempt.IsZero() {
 		lastAttempt := policy.Status.LastUpgradeAttempt
-		timeSinceLastAttempt := time.Since(lastAttempt.Time) // using .Time here is fine; not part of QF1008
+		timeSinceLastAttempt := time.Since(lastAttempt.Time)
 		if timeSinceLastAttempt < minInterval {
 			return true, minInterval - timeSinceLastAttempt, nil
 		}
@@ -60,6 +60,8 @@ func ParseInterval(intervalStr string) time.Duration {
 // NextRun decides when the next reconciliation should occur based on cron or interval.
 // Precedence outside: paused -> startAfter -> (this function).
 // If a run is due now, returns 0.
+//   - For cron:   compute strictly from "now" (UTC default or requested TZ), return ReasonCron.
+//   - For interval: use lastChecked (if present), return ReasonInterval.
 func NextRun(now time.Time, lastChecked *metav1.Time, policy *eksv1alpha1.NodeGroupUpgradePolicy) (time.Duration, string, error) {
 	// 1) Cron schedule (if provided)
 	if policy.Spec.ScheduleCron != "" {
@@ -82,11 +84,12 @@ func NextRun(now time.Time, lastChecked *metav1.Time, policy *eksv1alpha1.NodeGr
 			return nextRunInterval(now, lastChecked, policy), ReasonInterval, fmt.Errorf("invalid scheduleCron: %w", err)
 		}
 
+		// IMPORTANT: cron computed from "now", not lastChecked
 		base := now.In(loc)
-		if lastChecked != nil && !lastChecked.IsZero() {
-			// QF1008 fix: use promoted method on embedded time.Time instead of .Time.In(loc)
-			base = lastChecked.In(loc)
-		}
+		// if lastChecked != nil && !lastChecked.IsZero() {
+		// 	// QF1008 fix: use promoted method on embedded time.Time instead of .Time.In(loc)
+		// 	base = lastChecked.In(loc)
+		// }
 		next := schedule.Next(base)
 		if now.In(loc).Before(next) {
 			return next.Sub(now.In(loc)), ReasonCron, nil
@@ -103,7 +106,6 @@ func nextRunInterval(now time.Time, lastChecked *metav1.Time, policy *eksv1alpha
 	if lastChecked == nil || lastChecked.IsZero() {
 		return 0 // first run
 	}
-	// QF1008 fix: use promoted method on embedded time.Time instead of .Time.Add(d)
 	target := lastChecked.Add(d)
 	if now.Before(target) {
 		return target.Sub(now)
@@ -112,6 +114,7 @@ func nextRunInterval(now time.Time, lastChecked *metav1.Time, policy *eksv1alpha
 }
 
 // Jitter adds ±10% randomization to a duration to avoid thundering herd.
+// NOTE: The controller will apply jitter ONLY for ReasonInterval (not for cron).
 func Jitter(d time.Duration) time.Duration {
 	if d <= 0 {
 		return d

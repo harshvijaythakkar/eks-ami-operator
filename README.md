@@ -48,11 +48,11 @@ A Kubernetes operator to **automate and manage EKS managed node group AMI upgrad
   - `scheduleCron` + `scheduleTimezone` (**default = UTC** if timezone omitted)
   - Fallback `checkInterval` (Go duration)
   - **Precedence**: `paused` → `startAfter` → `scheduleCron` → `checkInterval`
-  - **Jitter** on all future requeues to avoid synchronized spikes
+  - **Cron = exact (no jitter)**, **Interval = jittered**
 - **Status & Conditions**: `UpgradeStatus`, `CurrentAmi`, `TargetAmi`, `LastChecked`,
   `LastScheduledTime`, `NextScheduledTime`, plus standardized conditions
 - **Metrics** for compliance, attempts, timestamps, and next scheduled run
-- **Robust retries** with **exponential backoff** (+ slight jitter)
+- **Robust retries** with **exponential backoff**
 - **Finalizers** for safe deletion
 - **Refactored, testable structure** (`internal/` packages for scheduler, awsutils, upgrade, finalizer)
 
@@ -187,15 +187,18 @@ kubectl delete -f examples/nodegroupupgradepolicy_autoupgrade_true.yaml
   2. startAfter: <RFC3339> in the future → requeue until that moment
   3. scheduleCron + scheduleTimezone (default = UTC when timezone omitted)
   4. checkInterval (fallback)
+- Defaults (admission/controller)
+  - If both `scheduleCron` and `checkInterval` are omitted → `checkInterval` defaults to **`24h`**.
+  - If `scheduleCron` is set and `scheduleTimezone` is omitted → timezone defaults to **`UTC`**.
 - Jitter: a small ±10% randomization is applied to all future requeues to avoid synchronized spikes.
 - Common patterns:
   - "Every night at 02:00 UTC"
-  ```
+  ```yaml
     scheduleCron: "0 2 * * *"
     # scheduleTimezone omitted → defaults to UTC
   ```
   - "Weekdays at 03:00 IST"
-  ```
+  ```yaml
     scheduleCron: "0 3 * * 1-5"
     scheduleTimezone: "Asia/Kolkata"
   ```
@@ -262,8 +265,9 @@ Selected fields on status:
 - LastChecked, LastUpgradeAttempt
 - LastScheduledTime, NextScheduledTime
 - conditions[]:
-  - Upgrade conditions: UpgradeInitiated, UpgradeFailed, UpgradeSucceeded
-  - AMI compliance: OutdatedAMI, UpToDate
+  - Upgrade conditions: `UpgradeInitiated`, `UpgradeFailed`, `UpgradeSucceeded`
+  - AMI compliance: `OutdatedAMI`, `UpToDate`
+  - (When applicable) `UnsupportedAMI` (e.g., AL2 on EKS ≥ 1.33)
 
 ---
 
@@ -271,8 +275,8 @@ Selected fields on status:
 
 - IRSA on EKS strongly recommended
 - Minimal pod security:
-  - runAsNonRoot: true
-  - readOnlyRootFilesystem: true
+  - `runAsNonRoot: true`
+  - `readOnlyRootFilesystem: true`
   - Drop all capabilities
 - Scope AWS IAM permissions to specific clusters/nodegroups where feasible.
 

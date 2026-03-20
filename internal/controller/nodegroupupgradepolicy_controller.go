@@ -342,7 +342,9 @@ func getAWSClients(ctx context.Context, region string) (*awsclient.AWSClients, e
 // }
 
 // whenToRunNext computes the next delay and returns (delay, dueNow bool).
-// If dueNow = false -> it logs reason, sets metrics, updates status (best-effort), and returns a jittered delay.
+// If dueNow = false -> it logs reason, sets metrics, updates status (best-effort), and returns the delay.
+//   - For cron:     delay is exact (no jitter).
+//   - For interval: delay is jittered.
 // If dueNow = true  -> logs reason and allows AWS work to proceed.
 func (r *NodeGroupUpgradePolicyReconciler) whenToRunNext(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy) (time.Duration, bool) {
 	logger := logf.FromContext(ctx)
@@ -355,34 +357,39 @@ func (r *NodeGroupUpgradePolicyReconciler) whenToRunNext(ctx context.Context, po
 			"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
 	}
 
-	// Apply jitter and emit metric
-	jittered := scheduler.Jitter(delay)
-	metrics.NextRunSeconds.
-		WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).
-		Set(jittered.Seconds())
+	// Apply jitter ONLY for interval schedules
+	requeue := delay
+	if reason == scheduler.ReasonInterval {
+		requeue = scheduler.Jitter(delay)
+	}
 
-	if jittered > 0 {
+	// Emit the NextRunSeconds metric with the actual delay we will use
+	metrics.NextRunSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(requeue.Seconds())
+
+	if requeue > 0 {
 		// Not due yet → update status (best-effort) & log reason
 		policy.Status.LastScheduledTime = metav1.Now()
-		policy.Status.NextScheduledTime = metav1.NewTime(now.Add(jittered))
+		policy.Status.NextScheduledTime = metav1.NewTime(now.Add(requeue))
 		if uerr := r.Status().Update(ctx, policy); uerr != nil {
 			logger.Error(uerr, "failed to update scheduled status",
 				"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
 		}
 
 		logger.Info("Not due yet; requeueing",
-			"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", jittered)
-		return jittered, false
+			"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", requeue)
+		return requeue, false
 	}
 
 	// Due now
-	logger.Info("Due now; proceeding;",
+	logger.Info("Due now; proceeding with AWS work",
 		"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
 	return 0, true
 }
 
-// computeNextDelay returns the next cron/interval-based delay with jitter,
-// logs the reason, and emits the metric. Used in all error branches and post-success.
+// computeNextDelay returns the next cron/interval-based delay,
+// logs the reason, and emits the metric.
+//   - For cron:     returns exact delay (no jitter).
+//   - For interval: returns jittered delay.
 func (r *NodeGroupUpgradePolicyReconciler) computeNextDelay(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy) time.Duration {
 	logger := logf.FromContext(ctx)
 	now := time.Now()
@@ -401,14 +408,14 @@ func (r *NodeGroupUpgradePolicyReconciler) computeNextDelay(ctx context.Context,
 		reason = "interval-fallback-after-immediate"
 	}
 
-	jittered := scheduler.Jitter(delay)
+	requeue := delay
+	if reason == scheduler.ReasonInterval {
+		requeue = scheduler.Jitter(delay)
+	}
 
-	// Emit NextRunSeconds metric here too
-	metrics.NextRunSeconds.
-		WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).
-		Set(jittered.Seconds())
+	metrics.NextRunSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(requeue.Seconds())
 
 	logger.Info("Computed next delay",
-		"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", jittered)
-	return jittered
+		"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", requeue)
+	return requeue
 }
