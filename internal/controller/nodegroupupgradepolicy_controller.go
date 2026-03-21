@@ -392,8 +392,8 @@ func (r *NodeGroupUpgradePolicyReconciler) whenToRunNext(ctx context.Context, po
 //   - For cron: delay is exact (no jitter).
 //   - For interval: delay is jittered.
 //
-// IMPORTANT: After a successful cron run (delay==0), this recomputes using a small nudge
-// to target the *next* cron occurrence rather than the interval fallback.
+// After a successful cron run ("delay == 0"), we nudge forward past the late tolerance
+// and recompute once, so we requeue to the *next cron* rather than falling back to interval.
 func (r *NodeGroupUpgradePolicyReconciler) computeNextDelay(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy) time.Duration {
 	logger := logf.FromContext(ctx)
 	now := time.Now()
@@ -404,21 +404,19 @@ func (r *NodeGroupUpgradePolicyReconciler) computeNextDelay(ctx context.Context,
 			"reason", reason, "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
 	}
 
-	// If NextRun says “run now” (delay <= 0):
-	// - For cron: nudge forward a couple seconds and recompute, so we aim the next cron tick.
-	// - For interval: fall back to interval to avoid tight loops.
-	if delay <= 0 {
-		// Nudge 'now' forward slightly and recompute once
-		nudge := now.Add(2 * time.Second)
+	// If scheduler says "run now" again (at/just-after boundary) and we are on cron,
+	// nudge the time forward beyond the late tolerance and recompute once
+	if delay <= 0 && reason == scheduler.ReasonCron {
+		// lateTolerance is 5s in NextRun; nudge beyond it to avoid "due now" again
+		nudge := now.Add(6 * time.Second)
 		delay2, reason2, _ := scheduler.NextRun(nudge, &policy.Status.LastChecked, policy)
-		delay = delay2
-		reason = reason2
+		delay, reason = delay2, reason2
+	}
 
-		// Safety: If we still get <=0 for any reason, fall back to interval once.
-		if delay <= 0 {
-			delay = scheduler.ParseInterval(policy.Spec.CheckInterval)
-			reason = "interval-fallback-after-immediate"
-		}
+	// Safety net: if still <= 0 for any reason, fall back once to interval to avoid tight loop
+	if delay <= 0 {
+		delay = scheduler.ParseInterval(policy.Spec.CheckInterval)
+		reason = "interval-fallback-after-immediate"
 	}
 
 	// Apply jitter ONLY for interval schedules
