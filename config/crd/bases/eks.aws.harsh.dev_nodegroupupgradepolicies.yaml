@@ -146,6 +146,11 @@ spec:
               lastChecked:
                 format: date-time
                 type: string
+              lastProgressCheck:
+                description: LastProgressCheck indicates the last time progress was
+                  polled via DescribeUpdate.
+                format: date-time
+                type: string
               lastScheduledTime:
                 description: Scheduling observability
                 format: date-time
@@ -157,6 +162,17 @@ spec:
                 format: date-time
                 type: string
               targetAmi:
+                type: string
+              updateErrors:
+                description: UpdateErrors contains error code/message pairs from DescribeUpdate
+                  (if any).
+                items:
+                  type: string
+                type: array
+              updateID:
+                type: string
+              updateStatus:
+                description: 'UpdateStatus mirrors DescribeUpdate status: InProgress|Successful|Failed.'
                 type: string
               upgradeStatus:
                 enum:
