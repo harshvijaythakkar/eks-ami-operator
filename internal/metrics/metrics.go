@@ -60,6 +60,25 @@ var (
 		},
 		[]string{"cluster", "nodegroup"},
 	)
+
+	// lifecycle status of the current/last EKS managed nodegroup update
+	// status - {"idle","in_progress","successful","failed","cancelled"}
+	UpdateStatus = prom.NewGaugeVec(
+		prom.GaugeOpts{
+			Name: "eks_ami_operator_update_status",
+			Help: "Lifecycle of the EKS managed nodegroup update (one-hot by 'status')",
+		},
+		[]string{"cluster", "nodegroup", "status"},
+	)
+
+	// Seconds in-flight while an update is running (0 when idle/terminal)
+	UpdateInflightSeconds = prom.NewGaugeVec(
+		prom.GaugeOpts{
+			Name: "eks_ami_operator_update_inflight_seconds",
+			Help: "Seconds since last upgrade attempt while update is InProgress; 0 otherwise",
+		},
+		[]string{"cluster", "nodegroup"},
+	)
 )
 
 func init() {
@@ -70,5 +89,7 @@ func init() {
 		LastCheckedTimestamp,
 		DeletedPolicies,
 		NextRunSeconds,
+		UpdateStatus,
+		UpdateInflightSeconds,
 	)
 }

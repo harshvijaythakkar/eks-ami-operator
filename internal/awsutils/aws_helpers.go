@@ -30,6 +30,15 @@ const AL2UnsupportedMinorCutoff = 33
 // published for the current EKS cluster version.
 var ErrAL2UnsupportedOnCluster = errors.New("al2 ami not published for this eks version")
 
+// UpdateOutcome is a generic view of an EKS update lifecycle state.
+type UpdateOutcome struct {
+	ID        string
+	Status    types.UpdateStatus // typed: InProgress | Successful | Failed | Cancelled
+	Errors    []string // "<code>: <message>" pairs
+	CreatedAt *time.Time
+	Type      string // e.g., "VersionUpdate"
+}
+
 // DescribeNodegroup wraps retry logic.
 func DescribeNodegroup(ctx context.Context, eksClient *eks.Client, clusterName, nodegroupName string) (*eks.DescribeNodegroupOutput, error) {
 	return retryDescribeNodegroup(ctx, eksClient, &eks.DescribeNodegroupInput{
@@ -218,4 +227,36 @@ func newJitterBackoff(initial, maxElapsed time.Duration) *backoff.ExponentialBac
 	exp.InitialInterval = initial + time.Duration(rng.Intn(500))*time.Millisecond
 	exp.MaxElapsedTime = maxElapsed
 	return exp
+}
+
+// DescribeNodegroupUpdate returns the current outcome for a managed node group update.
+func DescribeNodegroupUpdate(ctx context.Context, eksClient *eks.Client, cluster, nodegroup, updateID string) (*UpdateOutcome, error) {
+	out, err := eksClient.DescribeUpdate(ctx, &eks.DescribeUpdateInput{
+		Name:          aws.String(cluster),
+		NodegroupName: aws.String(nodegroup),
+		UpdateId:      aws.String(updateID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	u := out.Update
+	var errs []string
+	for _, e := range u.Errors {
+		code := strings.TrimSpace(string(e.ErrorCode))
+		msg := strings.TrimSpace(aws.ToString(e.ErrorMessage))
+		if code == "" && msg == "" {
+			continue
+		}
+		if code == "" {
+			code = "Unknown"
+		}
+		errs = append(errs, fmt.Sprintf("%s: %s", code, msg))
+	}
+	return &UpdateOutcome{
+		ID:        aws.ToString(u.Id),
+		Status:    u.Status,
+		Errors:    errs,
+		CreatedAt: u.CreatedAt,
+		Type:      string(u.Type),
+	}, nil
 }

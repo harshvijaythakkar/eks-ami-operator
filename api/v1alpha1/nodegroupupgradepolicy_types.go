@@ -94,6 +94,16 @@ type NodeGroupUpgradePolicyStatus struct {
 	// Scheduling observability
 	LastScheduledTime metav1.Time `json:"lastScheduledTime,omitempty"`
 	NextScheduledTime metav1.Time `json:"nextScheduledTime,omitempty"`
+
+	// --- EKS managed nodegroup update tracking ---
+	// UpdateID is the EKS Update identifier returned by UpdateNodegroupVersion.
+	UpdateID string `json:"updateID,omitempty"`
+	// UpdateStatus mirrors DescribeUpdate status: InProgress|Successful|Failed.
+	UpdateStatus string `json:"updateStatus,omitempty"`
+	// UpdateErrors contains error code/message pairs from DescribeUpdate (if any).
+	UpdateErrors []string `json:"updateErrors,omitempty"`
+	// LastProgressCheck indicates the last time progress was polled via DescribeUpdate.
+	LastProgressCheck metav1.Time `json:"lastProgressCheck,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -109,14 +109,26 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	// Cron/interval decision — if not due, exit early without AWS work (with proper logging)
-	if nd, due := r.whenToRunNext(ctx, &policy); !due {
-		return ctrl.Result{RequeueAfter: nd}, nil
+	// if nd, due := r.whenToRunNext(ctx, &policy); !due {
+	// 	return ctrl.Result{RequeueAfter: nd}, nil
+	// }
+
+	// Skip schedule gating while an EKS update is in-flight (so we poll progress now).
+	if !(policy.Status.UpgradeStatus == "InProgress" && policy.Status.UpdateID != "") {
+		if nd, due := r.whenToRunNext(ctx, &policy); !due {
+			return ctrl.Result{RequeueAfter: nd}, nil
+		}
 	}
 
 	// Due now: proceed with logic
 	// AWS clients
 	clients, err := getAWSClients(ctx, policy.Spec.Region)
 	if err != nil {
+		if policy.Status.UpgradeStatus == "InProgress" && policy.Status.UpdateID != "" {
+			logger.Error(err, "AWS client creation failed; short requeue while update in-flight",
+				"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
+			return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
+		}
 		nd := r.computeNextDelay(ctx, &policy)
 		logger.Error(err, "AWS client creation failed; requeueing via schedule",
 			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
@@ -126,6 +138,11 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	// Describe the node group to get current AMI and other metadata
 	ngOutput, err := awsutils.DescribeNodegroup(ctx, clients.EKS, policy.Spec.ClusterName, policy.Spec.NodeGroupName)
 	if err != nil {
+		if policy.Status.UpgradeStatus == "InProgress" && policy.Status.UpdateID != "" {
+			logger.Error(err, "DescribeNodegroup failed; short requeue while update in-flight",
+				"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
+			return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
+		}
 		nd := r.computeNextDelay(ctx, &policy)
 		logger.Error(err, "DescribeNodegroup failed; requeueing via schedule",
 			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
@@ -209,6 +226,14 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 
 	// If no lastChecked or interval has passed, proceed and requeue after full interval
 	// logger.Info("Requeueing after full interval", "interval", interval)
+
+	// While an update is in-flight, poll more frequently (e.g., every 2 minutes).
+	// When ProcessUpgrade flips to terminal (Succeeded/Failed/Skipped), this condition becomes false
+	// and we fall back to normal cron/interval requeue below.
+	if policy.Status.UpgradeStatus == "InProgress" && policy.Status.UpdateID != "" {
+		logger.Info("Upgrade in progress; short requeue for progress polling", "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
+		return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
+	}
 
 	// After a successful run, set observable schedule for next time
 	nextDelay := r.computeNextDelay(ctx, &policy)

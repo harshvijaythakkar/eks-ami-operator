@@ -227,6 +227,20 @@ Labels: cluster, nodegroup
 - eks_ami_operator_next_run_seconds (gauge) — computed delay until next scheduled reconcile
 Labels: cluster, nodegroup
 
+### Additional lifecycle metrics
+
+- `eks_ami_operator_update_status` *(gauge)* — lifecycle of the managed node group update  
+  Labels: `cluster`, `nodegroup`, `status`  
+  status values: `idle`, `in_progress`, `successful`, `failed`, `cancelled`  
+  Examples:
+  - `…{status="in_progress"} == 1` while an update is running
+  - `…{status="successful"} == 1` after EKS reports *Successful*
+  - `…{status="failed"}` or `…{status="cancelled"} == 1` after terminal failure/cancel
+
+
+- `eks_ami_operator_update_inflight_seconds` *(gauge)* — seconds since the last upgrade attempt while the update is InProgress, `0` otherwise
+Labels: `cluster`, `nodegroup`
+
 ### Example PromQL queries
 
 - Outdated nodegroups by cluster:
@@ -252,6 +266,36 @@ max by (cluster, nodegroup) (eks_ami_operator_last_checked_timestamp_seconds)
 - Time to next run:
 ```
 max by (cluster, nodegroup) (eks_ami_operator_next_run_seconds)
+```
+
+- Terminal failed/cancelled
+```
+max by (cluster, nodegroup)
+```
+
+- Upgrade in progress too long (e.g., > 8h)
+```
+eks_ami_operator_update_inflight_seconds > 8 * 60 * 60
+```
+
+- Initiation failures (API errors)
+```
+increase(eks_ami_operator_upgrade_attempts_total{result="failed"}[15m]) > 0
+```
+
+- Nodegroup non-compliant for too long (e.g., > 6h)
+```
+max_over_time(1 - eks_ami_operator_compliance_status[6h]) == 1
+```
+
+- Operator stalled (no checks) (24h)
+```
+(time() - eks_ami_operator_last_checked_timestamp_seconds) > 24*60*60
+```
+
+- Suspiciously distant next run (> 5 days)
+```
+eks_ami_operator_next_run_seconds > 5 * 24 * 60 * 60
 ```
 
 ---
