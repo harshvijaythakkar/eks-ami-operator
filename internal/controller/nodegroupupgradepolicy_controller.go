@@ -114,7 +114,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	// }
 
 	// Skip schedule gating while an EKS update is in-flight (so we poll progress now).
-	if !(policy.Status.UpgradeStatus == upgrade.UpgradeStatusInProgress && policy.Status.UpdateID != "") {
+	if policy.Status.UpgradeStatus != upgrade.UpgradeStatusInProgress || policy.Status.UpdateID == "" {
 		if nd, due := r.whenToRunNext(ctx, &policy); !due {
 			return ctrl.Result{RequeueAfter: nd}, nil
 		}
