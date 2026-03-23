@@ -15,6 +15,7 @@ import (
 	eksv1alpha1 "github.com/harshvijaythakkar/eks-ami-operator/api/v1alpha1"
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/awsutils"
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/metrics"
+	"github.com/harshvijaythakkar/eks-ami-operator/internal/scheduler"
 )
 
 const (
@@ -193,6 +194,25 @@ func ProcessUpgrade(ctx context.Context, c client.Client, policy *eksv1alpha1.No
 	logger.Info("Managed nodegroup update initiated", "updateID", policy.Status.UpdateID, "targetRelease", latestRelease)
 	metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "in_progress").Set(1)
 	metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
+
+	// stamp the *next* cron window now so status doesn't point at the boundary we just ran ---
+	{
+		// Nudge beyond late tolerance (5s) so NextRun returns the next occurrence, not "run now"
+		now := time.Now()
+		nudge := now.Add(6 * time.Second)
+		delay, reason, _ := scheduler.NextRun(nudge, &policy.Status.LastChecked, policy)
+		switch reason {
+		case scheduler.ReasonCron:
+			if delay > 0 {
+				policy.Status.NextScheduledTime = metav1.NewTime(now.Add(delay))
+			}
+		case scheduler.ReasonInterval:
+			// Defensive fallback: for valid cron we don't expect this branch
+			if delay > 0 {
+				policy.Status.NextScheduledTime = metav1.NewTime(now.Add(delay))
+			}
+		}
+	}
 
 	return c.Status().Update(ctx, policy)
 }
