@@ -34,7 +34,7 @@ var ErrAL2UnsupportedOnCluster = errors.New("al2 ami not published for this eks 
 type UpdateOutcome struct {
 	ID        string
 	Status    types.UpdateStatus // typed: InProgress | Successful | Failed | Cancelled
-	Errors    []string // "<code>: <message>" pairs
+	Errors    []string           // "<code>: <message>" pairs
 	CreatedAt *time.Time
 	Type      string // e.g., "VersionUpdate"
 }
@@ -240,7 +240,8 @@ func DescribeNodegroupUpdate(ctx context.Context, eksClient *eks.Client, cluster
 		return nil, err
 	}
 	u := out.Update
-	var errs []string
+	// var errs []string
+	errs := make([]string, 0, len(u.Errors))
 	for _, e := range u.Errors {
 		code := strings.TrimSpace(string(e.ErrorCode))
 		msg := strings.TrimSpace(aws.ToString(e.ErrorMessage))

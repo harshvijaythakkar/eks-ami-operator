@@ -114,7 +114,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	// }
 
 	// Skip schedule gating while an EKS update is in-flight (so we poll progress now).
-	if !(policy.Status.UpgradeStatus == "InProgress" && policy.Status.UpdateID != "") {
+	if !(policy.Status.UpgradeStatus == upgrade.UpgradeStatusInProgress && policy.Status.UpdateID != "") {
 		if nd, due := r.whenToRunNext(ctx, &policy); !due {
 			return ctrl.Result{RequeueAfter: nd}, nil
 		}
@@ -124,7 +124,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	// AWS clients
 	clients, err := getAWSClients(ctx, policy.Spec.Region)
 	if err != nil {
-		if policy.Status.UpgradeStatus == "InProgress" && policy.Status.UpdateID != "" {
+		if policy.Status.UpgradeStatus == upgrade.UpgradeStatusInProgress && policy.Status.UpdateID != "" {
 			logger.Error(err, "AWS client creation failed; short requeue while update in-flight",
 				"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
 			return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
@@ -138,7 +138,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	// Describe the node group to get current AMI and other metadata
 	ngOutput, err := awsutils.DescribeNodegroup(ctx, clients.EKS, policy.Spec.ClusterName, policy.Spec.NodeGroupName)
 	if err != nil {
-		if policy.Status.UpgradeStatus == "InProgress" && policy.Status.UpdateID != "" {
+		if policy.Status.UpgradeStatus == upgrade.UpgradeStatusInProgress && policy.Status.UpdateID != "" {
 			logger.Error(err, "DescribeNodegroup failed; short requeue while update in-flight",
 				"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
 			return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
@@ -230,7 +230,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	// While an update is in-flight, poll more frequently (e.g., every 2 minutes).
 	// When ProcessUpgrade flips to terminal (Succeeded/Failed/Skipped), this condition becomes false
 	// and we fall back to normal cron/interval requeue below.
-	if policy.Status.UpgradeStatus == "InProgress" && policy.Status.UpdateID != "" {
+	if policy.Status.UpgradeStatus == upgrade.UpgradeStatusInProgress && policy.Status.UpdateID != "" {
 		logger.Info("Upgrade in progress; short requeue for progress polling", "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
 		return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
 	}

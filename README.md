@@ -16,6 +16,7 @@ A Kubernetes operator to **automate and manage EKS managed node group AMI upgrad
 - [Quick start (sample CRs)](#quick-start-sample-crs)
 - [Scheduling semantics](#scheduling-semantics)
 - [Metrics](#metrics)
+- [Upgrade Lifecycle & Status Fields](#Upgrade-Lifecycle--Status-Fields)
 - [Status & Conditions](#status--conditions)
 - [Security & RBAC](#security--rbac)
 - [Development](#development)
@@ -296,6 +297,139 @@ max_over_time(1 - eks_ami_operator_compliance_status[6h]) == 1
 - Suspiciously distant next run (> 5 days)
 ```
 eks_ami_operator_next_run_seconds > 5 * 24 * 60 * 60
+```
+
+---
+
+## Upgrade Lifecycle & Status Fields
+
+This operator exposes **two complementary status fields** on `NodeGroupUpgradePolicy`:
+
+*   **`status.upgradeStatus`** — *Operator’s high‑level lifecycle* of the nodegroup upgrade.
+    *   Values: `InProgress`, `Succeeded`, `Failed`, `Skipped`.
+*   **`status.updateStatus`** — *EKS authoritative status* for the specific **`status.updateID`** (from `DescribeUpdate`).
+    *   Values (typed by AWS): `InProgress`, `Successful`, `Failed`, `Cancelled`.
+
+> **Mental model**  
+> `upgradeStatus` = “**Operator’s story** about the whole upgrade”  
+> `updateStatus` = “**EKS’s story** about this specific UpdateID\*\*”
+
+### When each field changes
+
+| Scenario                                               | Operator action   | `upgradeStatus` | `updateID` | `updateStatus`       |
+| ------------------------------------------------------ | ----------------- | --------------- | ---------- | -------------------- |
+| **Compliant already**                                  | Do nothing        | `Succeeded`     | —          | —                    |
+| **Outdated & autoUpgrade=false**                       | Do nothing        | `Skipped`       | —          | —                    |
+| **Unsupported AMI** (e.g., AL2 on EKS ≥ 1.33)          | Do nothing        | `Skipped`       | —          | —                    |
+| **Initiation failed** (`UpdateNodegroupVersion` error) | Stop              | `Failed`        | —          | —                    |
+| **Initiation succeeded**                               | Track             | `InProgress`    | set        | `InProgress`         |
+| **Polling: EKS says InProgress**                       | Keep polling \~2m | `InProgress`    | keep       | `InProgress`         |
+| **Polling: EKS says Successful**                       | Finish            | `Succeeded`     | keep       | `Successful`         |
+| **Polling: EKS says Failed/Cancelled**                 | Finish            | `Failed`        | keep       | `Failed`/`Cancelled` |
+
+> While **in progress**, the controller **short‑requeues \~2 minutes** for live progress.  
+> After **terminal** (Successful/Failed/Cancelled), it returns to the **user’s cron/interval** cadence.
+
+### Field glossary (selected)
+
+*   `status.updateID`: The EKS **UpdateID** returned by `UpdateNodegroupVersion`. Used with `DescribeUpdate`.
+*   `status.updateStatus`: What EKS reports for the above UpdateID (`InProgress|Successful|Failed|Cancelled`).
+*   `status.upgradeStatus`: The operator’s high‑level lifecycle (`InProgress|Succeeded|Failed|Skipped`).
+*   `status.lastUpgradeAttempt`: Timestamp when we last initiated an EKS update.
+*   `status.lastProgressCheck`: Timestamp of the latest `DescribeUpdate` poll.
+*   `status.nextScheduledTime`: The **next cron window** (Option A behavior).
+    *   During initiation we compute the *next* cron (using a small nudge) and stamp it, so the CR shows a **future** time while we short‑poll.
+    *   If an upgrade was already in flight before this behavior was added, the value may still point to the **boundary that just fired** until the next initiation/terminal state.
+
+### Example statuses
+
+**New initiation (outdated + autoUpgrade=true)**
+
+```yaml
+status:
+  upgradeStatus: InProgress
+  updateID: 58efb0dc-09c6-3834-88be-e84c9112d5c5
+  updateStatus: InProgress
+  lastUpgradeAttempt: "2026-03-23T10:15:00Z"
+  nextScheduledTime: "2026-03-24T10:15:00Z"   # next cron window (computed at initiation)
+```
+
+**Terminal success**
+
+```yaml
+status:
+  upgradeStatus: Succeeded
+  updateID: 58efb0dc-09c6-3834-88be-e84c9112d5c5
+  updateStatus: Successful
+  lastProgressCheck: "2026-03-23T10:42:12Z"
+```
+
+**Terminal failure**
+
+```yaml
+status:
+  upgradeStatus: Failed
+  updateID: 58efb0dc-09c6-3834-88be-e84c9112d5c5
+  updateStatus: Failed
+  updateErrors:
+    - "PodEvictionFailure: Reached max retries while trying to evict pods from nodes in node group ..."
+```
+
+> We always surface **all error messages** returned by EKS in `status.updateErrors[]` (no special‑casing). If your policy allows, you may re‑try with `force=true` on a later cron window for eviction‑blocked cases.
+
+***
+
+## Metrics for Alerting & Dashboards
+
+### Lifecycle (one‑hot) and in‑flight timer
+
+*   **`eks_ami_operator_update_status{cluster,nodegroup,status}`** *(gauge)*  
+    One‑hot lifecycle: `status ∈ {idle, in_progress, successful, failed, cancelled}`. Exactly one value is `1` per nodegroup.
+*   **`eks_ami_operator_update_inflight_seconds{cluster,nodegroup}`** *(gauge)*  
+    Seconds since `status.lastUpgradeAttempt` **while InProgress**, otherwise `0`.
+
+### Existing metrics (recap)
+
+*   **`eks_ami_operator_compliance_status{cluster,nodegroup}`** *(gauge)* — `1` compliant, `0` not.
+*   **`eks_ami_operator_outdated_nodegroups{cluster}`** *(gauge)* — count of outdated nodegroups.
+*   **`eks_ami_operator_upgrade_attempts_total{cluster,nodegroup,result}`** *(counter)* — `result ∈ success|failed|skipped` (initiation attempts).
+*   **`eks_ami_operator_last_checked_timestamp_seconds{cluster,nodegroup}`** *(gauge)*
+*   **`eks_ami_operator_next_run_seconds{cluster,nodegroup}`** *(gauge)*
+
+***
+
+## Suggested PromQL Alerts
+
+> Adjust label filters (e.g., `cluster=~"prod-.*"`) and severities for your environment.
+
+**Terminal failed/cancelled**
+
+```promql
+max by (cluster, nodegroup) (eks_ami_operator_update_status{status=~"failed|cancelled"}) == 1
+```
+
+**Upgrade in progress too long (e.g., > 8h)**
+
+```promql
+eks_ami_operator_update_inflight_seconds > 8 * 60 * 60
+```
+
+**Initiation failures in last 15 minutes**
+
+```promql
+increase(eks_ami_operator_upgrade_attempts_total{result="failed"}[15m]) > 0
+```
+
+**Nodegroup non‑compliant for too long (e.g., 6h)**
+
+```promql
+max_over_time(1 - eks_ami_operator_compliance_status[6h]) == 1
+```
+
+**Operator stalled: last check too old (e.g., 24h)**
+
+```promql
+(time() - eks_ami_operator_last_checked_timestamp_seconds) > 24*60*60
 ```
 
 ---
