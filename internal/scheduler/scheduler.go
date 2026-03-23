@@ -3,6 +3,7 @@ package scheduler
 import (
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,12 +38,27 @@ func ShouldSkip(policy *eksv1alpha1.NodeGroupUpgradePolicy) (bool, time.Duration
 		}
 	}
 
-	minInterval := 6 * time.Hour
-	if !policy.Status.LastUpgradeAttempt.IsZero() {
-		lastAttempt := policy.Status.LastUpgradeAttempt
-		timeSinceLastAttempt := time.Since(lastAttempt.Time)
-		if timeSinceLastAttempt < minInterval {
-			return true, minInterval - timeSinceLastAttempt, nil
+	// minInterval := 6 * time.Hour
+	// if !policy.Status.LastUpgradeAttempt.IsZero() {
+	// 	lastAttempt := policy.Status.LastUpgradeAttempt
+	// 	timeSinceLastAttempt := time.Since(lastAttempt.Time)
+	// 	if timeSinceLastAttempt < minInterval {
+	// 		return true, minInterval - timeSinceLastAttempt, nil
+	// 	}
+	// }
+
+	// Apply 6h cooldown (minInterval) ONLY when using interval scheduling.
+	// If a cron expression is configured (even if timezone omitted), we must not
+	// throttle via cooldown because cron is the source of truth for cadence.
+	usingCron := strings.TrimSpace(policy.Spec.ScheduleCron) != ""
+	if !usingCron {
+		minInterval := 6 * time.Hour
+		if !policy.Status.LastUpgradeAttempt.IsZero() {
+			lastAttempt := policy.Status.LastUpgradeAttempt
+			timeSinceLastAttempt := time.Since(lastAttempt.Time)
+			if timeSinceLastAttempt < minInterval {
+				return true, minInterval - timeSinceLastAttempt, nil
+			}
 		}
 	}
 
@@ -76,7 +92,7 @@ func NextRun(now time.Time, lastChecked *metav1.Time, policy *eksv1alpha1.NodeGr
 				// If timezone invalid, fall back to interval but report error
 				return nextRunInterval(now, lastChecked, policy), ReasonInterval, fmt.Errorf("invalid scheduleTimezone: %w", err)
 			}
-			loc = l
+			// loc = l
 		}
 
 		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
