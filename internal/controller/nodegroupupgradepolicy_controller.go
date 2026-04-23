@@ -105,12 +105,9 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	// Describe nodegroup
-	ngOutput, res, err := r.describeNodegroupOrRequeue(ctx, &policy, clients)
+	ngOutput, res := r.describeNodegroupOrRequeue(ctx, &policy, clients)
 	if res != nil {
 		return *res, err
-	}
-	if err != nil {
-		return ctrl.Result{}, err
 	}
 
 	// Metadata
@@ -128,12 +125,9 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	// Resolve latest AMI (or unsupported)
-	latestAmi, latestReleaseVersion, res, err := r.resolveLatestOrRequeue(ctx, &policy, clients, ngOutput, eksVersion)
+	latestAmi, latestReleaseVersion, res := r.resolveLatestOrRequeue(ctx, &policy, clients, ngOutput, eksVersion)
 	if res != nil {
 		return *res, err
-	}
-	if err != nil {
-		return ctrl.Result{}, err
 	}
 	logger.Info("Fetched latest AMI metadata", "latestAmi", latestAmi, "latestReleaseVersion", latestReleaseVersion)
 
@@ -224,7 +218,7 @@ func getAWSClients(ctx context.Context, region string) (*awsclient.AWSClients, e
 }
 
 func (r *NodeGroupUpgradePolicyReconciler) isInFlight(policy *eksv1alpha1.NodeGroupUpgradePolicy) bool {
-    return policy.Status.UpgradeStatus == upgrade.UpgradeStatusInProgress && policy.Status.UpdateID != ""
+	return policy.Status.UpgradeStatus == upgrade.UpgradeStatusInProgress && policy.Status.UpdateID != ""
 }
 
 // func (r *NodeGroupUpgradePolicyReconciler) handleFinalizer(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, finalizerName string) (bool, error) {
@@ -369,26 +363,26 @@ func (r *NodeGroupUpgradePolicyReconciler) getClientsOrRequeue(ctx context.Conte
 	return nil, &res, err
 }
 
-func (r *NodeGroupUpgradePolicyReconciler) describeNodegroupOrRequeue(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, clients *awsclient.AWSClients) (*eks.DescribeNodegroupOutput, *ctrl.Result, error) {
+func (r *NodeGroupUpgradePolicyReconciler) describeNodegroupOrRequeue(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, clients *awsclient.AWSClients) (*eks.DescribeNodegroupOutput, *ctrl.Result) {
 	logger := logf.FromContext(ctx)
 
 	ngOutput, err := awsutils.DescribeNodegroup(ctx, clients.EKS, policy.Spec.ClusterName, policy.Spec.NodeGroupName)
 	if err == nil {
-		return ngOutput, nil, nil
+		return ngOutput, nil
 	}
 
 	if r.isInFlight(policy) {
 		logger.Error(err, "DescribeNodegroup failed; short requeue while update in-flight",
 			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
 		res := ctrl.Result{RequeueAfter: 2 * time.Minute}
-		return nil, &res, nil
+		return nil, &res
 	}
 
 	nd := r.computeNextDelay(ctx, policy)
 	logger.Error(err, "DescribeNodegroup failed; requeueing via schedule",
 		"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
 	res := ctrl.Result{RequeueAfter: nd}
-	return nil, &res, nil
+	return nil, &res
 }
 
 func (r *NodeGroupUpgradePolicyReconciler) describeClusterOrRequeue(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, clients *awsclient.AWSClients) (string, *ctrl.Result, error) {
@@ -406,12 +400,12 @@ func (r *NodeGroupUpgradePolicyReconciler) describeClusterOrRequeue(ctx context.
 	return "", &res, err
 }
 
-func (r *NodeGroupUpgradePolicyReconciler) resolveLatestOrRequeue(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, clients *awsclient.AWSClients, ngOutput *eks.DescribeNodegroupOutput, eksVersion string) (string, string, *ctrl.Result, error) {
+func (r *NodeGroupUpgradePolicyReconciler) resolveLatestOrRequeue(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, clients *awsclient.AWSClients, ngOutput *eks.DescribeNodegroupOutput, eksVersion string) (string, string, *ctrl.Result) {
 	logger := logf.FromContext(ctx)
 
 	latestAmi, latestReleaseVersion, err := awsutils.ResolveLatestAMI(ctx, clients.SSM, ngOutput.Nodegroup.AmiType, eksVersion)
 	if err == nil {
-		return latestAmi, latestReleaseVersion, nil, nil
+		return latestAmi, latestReleaseVersion, nil
 	}
 
 	// Unsupported AL2 on newer minors
@@ -434,7 +428,7 @@ func (r *NodeGroupUpgradePolicyReconciler) resolveLatestOrRequeue(ctx context.Co
 		_ = r.Status().Update(ctx, policy)
 		nd := r.computeNextDelay(ctx, policy)
 		res := ctrl.Result{RequeueAfter: nd}
-		return "", "", &res, nil
+		return "", "", &res
 	}
 
 	// Other errors -> normal schedule requeue
@@ -442,7 +436,7 @@ func (r *NodeGroupUpgradePolicyReconciler) resolveLatestOrRequeue(ctx context.Co
 	logger.Error(err, "ResolveLatestAMI failed; requeueing via schedule",
 		"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
 	res := ctrl.Result{RequeueAfter: nd}
-	return "", "", &res, nil
+	return "", "", &res
 }
 
 // whenToRunNext computes the next delay and returns (delay, dueNow bool).
