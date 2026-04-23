@@ -1,0 +1,21 @@
+apiVersion: v2
+name: eks-ami-operator
+description: A Kubernetes operator for automating EKS managed node group AMI upgrades
+type: application
+version: 0.1.0
+appVersion: "v0.1.0"
+kubeVersion: ">=1.16.0-0"
+keywords:
+  - eks
+  - aws
+  - ami
+  - kubernetes
+  - operator
+  - nodegroup
+  - upgrade
+home: https://github.com/harshvijaythakkar/eks-ami-operator
+sources:
+  - https://github.com/harshvijaythakkar/eks-ami-operator
+maintainers:
+  - name: Harsh Vijay Thakkar
+    url: https://github.com/harshvijaythakkar

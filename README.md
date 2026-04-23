@@ -165,7 +165,7 @@ NodeGroupUpgradePolicy CR
 helm install eks-ami-operator ./charts/eks-ami-operator \
   --namespace eks-ami-operator-system \
   --create-namespace \
-  --set image.repository=<your-registry>/eks-ami-operator \
+  --set image.repository=ghcr.io/harshvijaythakkar/eks-ami-operator \
   --set image.tag=<tag>
 ```
 
@@ -175,7 +175,7 @@ helm install eks-ami-operator ./charts/eks-ami-operator \
 helm install eks-ami-operator ./charts/eks-ami-operator \
   --namespace eks-ami-operator-system \
   --create-namespace \
-  --set image.repository=<your-registry>/eks-ami-operator \
+  --set image.repository=ghcr.io/harshvijaythakkar/eks-ami-operator \
   --set image.tag=<tag> \
   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::<account-id>:role/<irsa-role-name>
 ```
@@ -186,7 +186,7 @@ helm install eks-ami-operator ./charts/eks-ami-operator \
 helm install eks-ami-operator ./charts/eks-ami-operator \
   --namespace eks-ami-operator-system \
   --create-namespace \
-  --set image.repository=<your-registry>/eks-ami-operator \
+  --set image.repository=ghcr.io/harshvijaythakkar/eks-ami-operator \
   --set image.tag=<tag> \
   --set serviceMonitor.enabled=true \
   --set serviceMonitor.labels.release=prometheus-stack
@@ -196,7 +196,7 @@ helm install eks-ami-operator ./charts/eks-ami-operator \
 
 | Value | Default | Description |
 |---|---|---|
-| `image.repository` | `<your-registry>/eks-ami-operator` | Container image repository |
+| `image.repository` | `ghcr.io/harshvijaythakkar/eks-ami-operator` | Container image repository |
 | `image.tag` | `latest` | Container image tag |
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy |
 | `replicaCount` | `1` | Number of replicas |
@@ -735,6 +735,19 @@ make manifests
 
 ```bash
 make docker-build docker-push IMG=<registry>/eks-ami-operator:<tag>
+```
+
+### Helm chart development
+
+```bash
+# Lint the chart (strict mode)
+make helm-lint
+
+# Regenerate charts/eks-ami-operator/README.md after changing values.yaml or README.md.gotmpl
+make helm-docs
+
+# Package the chart into dist/
+make helm-package
 ```
 
 ### Project structure

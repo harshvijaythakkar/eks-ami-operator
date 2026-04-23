@@ -1,0 +1,162 @@
+# -- Number of replicas. Keep at 1; leader election handles HA.
+replicaCount: 1
+
+# -- Override the chart name.
+nameOverride: ""
+# -- Override the full release name.
+fullnameOverride: ""
+
+image:
+  # -- Container image repository.
+  repository: ghcr.io/harshvijaythakkar/eks-ami-operator
+  # -- Container image tag. Defaults to the chart appVersion when empty.
+  tag: ""
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+
+# -- Image pull secrets for private registries.
+# @default -- []
+imagePullSecrets: []
+# - name: my-registry-secret
+
+serviceAccount:
+  # -- Create a ServiceAccount for the operator.
+  create: true
+  # -- ServiceAccount name. Defaults to the release fullname when empty.
+  name: ""
+  # -- Annotations on the ServiceAccount.
+  # Commonly used to attach an IRSA role ARN:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/<role-name>
+  annotations: {}
+  # -- Disable automatic token mounting (recommended).
+  automountServiceAccountToken: false
+
+rbac:
+  # -- Create RBAC resources (ClusterRole, ClusterRoleBinding, Role, RoleBinding).
+  create: true
+
+# -- Annotations added to the operator Pod.
+podAnnotations: {}
+
+# -- Labels added to the operator Pod.
+podLabels: {}
+
+# -- Pod-level security context.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container-level security context.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Resource requests and limits for the manager container.
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+manager:
+  # -- Enable leader election. Required when running more than one replica.
+  leaderElection: true
+  # -- Address the metrics endpoint binds to.
+  metricsBindAddress: ":8080"
+  # -- Address the health probe endpoint binds to.
+  healthProbeBindAddress: ":8081"
+  # -- Enable HTTP/2 for the metrics and webhook servers.
+  # Disabled by default to avoid HTTP/2 stream cancellation vulnerabilities.
+  enableHTTP2: false
+  # -- Serve metrics over TLS.
+  # The binary default is true (HTTPS). Set to false to use plain HTTP on port 8080.
+  # When set to true, also set manager.metricsBindAddress to ":8443" and metrics.port to 8443,
+  # and ensure rbac.create=true so the metrics-auth ClusterRole is created.
+  metricsSecure: false
+
+webhook:
+  # -- Enable the admission webhook (defaulting + validation).
+  # Set to false for local development or environments without cert-manager.
+  enabled: true
+  # -- Webhook server port.
+  port: 9443
+  # -- Failure policy for the webhook. Fail means the request is rejected if the webhook is unavailable.
+  # Use Ignore for a more lenient policy during upgrades.
+  failurePolicy: Fail
+  certManager:
+    # -- Use cert-manager to provision and rotate webhook TLS certificates.
+    # Requires cert-manager to be installed in the cluster.
+    # When true, a self-signed Issuer and Certificate are created automatically,
+    # and cert-manager injects the CA bundle into the webhook configurations.
+    # When false, the chart generates a self-signed certificate via Helm and stores it in a Secret.
+    enabled: false
+
+metrics:
+  # -- Expose the /metrics endpoint.
+  enabled: true
+  # -- Metrics server port.
+  port: 8080
+
+# -- Liveness probe configuration.
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8081
+  initialDelaySeconds: 15
+  periodSeconds: 20
+  timeoutSeconds: 1
+  failureThreshold: 3
+
+# -- Readiness probe configuration.
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8081
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 1
+  failureThreshold: 3
+
+serviceMonitor:
+  # -- Create a Prometheus ServiceMonitor.
+  enabled: false
+  # -- Scrape interval.
+  interval: 30s
+  # -- Scrape timeout.
+  scrapeTimeout: 10s
+  # -- Additional labels on the ServiceMonitor.
+  # Must match the label selector of your Prometheus operator instance.
+  # Example: { release: prometheus-stack }
+  labels: {}
+  # -- Namespace for the ServiceMonitor. Defaults to the release namespace.
+  namespace: ""
+
+# -- Node selector for the operator Pod.
+nodeSelector: {}
+
+# -- Tolerations for the operator Pod.
+tolerations: []
+
+# -- Affinity rules for the operator Pod.
+affinity: {}
+
+# -- Priority class name for the operator Pod.
+priorityClassName: ""
+
+# -- Extra environment variables injected into the manager container.
+extraEnv: []
+# - name: MY_VAR
+#   value: "my-value"
+
+# -- Extra volumes added to the Pod.
+extraVolumes: []
+
+# -- Extra volume mounts added to the manager container.
+extraVolumeMounts: []

@@ -1,0 +1,20 @@
+{{- if and .Values.webhook.enabled (not .Values.webhook.certManager.enabled) }}
+{{- $tls := include "eks-ami-operator.webhookTLS" . | fromYaml }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "eks-ami-operator.webhookTLSSecretName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+  annotations:
+    # This secret is managed by the Helm chart.
+    # It is preserved across upgrades via lookup — the cert is only regenerated
+    # if the secret does not already exist.
+    helm.sh/resource-policy: keep
+type: kubernetes.io/tls
+data:
+  ca.crt: {{ $tls.ca }}
+  tls.crt: {{ $tls.crt }}
+  tls.key: {{ $tls.key }}
+{{- end }}

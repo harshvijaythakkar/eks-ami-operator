@@ -1,0 +1,33 @@
+{{- if and .Values.webhook.enabled .Values.webhook.certManager.enabled }}
+---
+# Self-signed Issuer used to sign the webhook serving certificate
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-selfsigned-issuer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+# Certificate for the webhook server TLS
+# cert-manager will create a Secret named {{ include "eks-ami-operator.fullname" . }}-serving-cert
+# and inject the CA bundle into the webhook configurations via the
+# cert-manager.io/inject-ca-from annotation.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-serving-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+spec:
+  dnsNames:
+    - {{ include "eks-ami-operator.fullname" . }}-webhook-service.{{ .Release.Namespace }}.svc
+    - {{ include "eks-ami-operator.fullname" . }}-webhook-service.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: {{ include "eks-ami-operator.fullname" . }}-selfsigned-issuer
+  secretName: {{ include "eks-ami-operator.webhookTLSSecretName" . }}
+{{- end }}

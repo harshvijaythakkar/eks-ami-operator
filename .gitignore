@@ -26,6 +26,8 @@ go.work
 *.swo
 *~
 
-charts/*
+# chart dependencies (downloaded by helm dependency update)
+charts/*/charts/
+charts/*/tmpcharts/
 
 .DS_Store

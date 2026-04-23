@@ -146,6 +146,23 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
+##@ Helm
+
+HELM_CHART_DIR ?= charts/eks-ami-operator
+
+.PHONY: helm-lint
+helm-lint: ## Lint the Helm chart (strict mode).
+	helm lint $(HELM_CHART_DIR) --strict
+
+.PHONY: helm-docs
+helm-docs: ## Regenerate charts/eks-ami-operator/README.md from README.md.gotmpl and values.yaml.
+	helm-docs --chart-search-root charts/
+
+.PHONY: helm-package
+helm-package: helm-lint ## Package the Helm chart into a .tgz archive under dist/.
+	mkdir -p dist
+	helm package $(HELM_CHART_DIR) --destination dist/
+
 ##@ Deployment
 
 ifndef ignore-not-found

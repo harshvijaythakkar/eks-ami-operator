@@ -1,0 +1,163 @@
+# {{ .Name }}
+
+{{ template "chart.description" . }}
+
+[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/eks-ami-operator)](https://artifacthub.io/packages/helm/eks-ami-operator/eks-ami-operator)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/harshvijaythakkar/eks-ami-operator/blob/main/LICENSE)
+
+## Chart info
+
+| Field | Value |
+|---|---|
+| Chart version | `{{ template "chart.version" . }}` |
+| App version | `{{ template "chart.appVersion" . }}` |
+| Kubernetes | `{{ template "chart.kubeVersion" . }}` |
+| Helm | `v3.0+` |
+
+## Prerequisites
+
+- Kubernetes `{{ template "chart.kubeVersion" . }}`
+- Helm `v3.0+`
+- AWS credentials with the following permissions:
+  - `eks:DescribeCluster`
+  - `eks:DescribeNodegroup`
+  - `eks:UpdateNodegroupVersion`
+  - `eks:DescribeUpdate`
+  - `ssm:GetParameter` on `arn:aws:ssm:<region>:*:parameter/aws/service/eks/*`
+  - `ec2:DescribeRegions`
+
+IRSA (IAM Roles for Service Accounts) is strongly recommended over static credentials.
+
+## Installation
+
+### Basic install
+
+```bash
+helm install eks-ami-operator ./charts/eks-ami-operator \
+  --namespace eks-ami-operator-system \
+  --create-namespace \
+  --set image.repository=ghcr.io/harshvijaythakkar/eks-ami-operator \
+  --set image.tag={{ template "chart.appVersion" . }}
+```
+
+### With IRSA (recommended for production)
+
+```bash
+helm install eks-ami-operator ./charts/eks-ami-operator \
+  --namespace eks-ami-operator-system \
+  --create-namespace \
+  --set image.repository=ghcr.io/harshvijaythakkar/eks-ami-operator \
+  --set image.tag={{ template "chart.appVersion" . }} \
+  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::<account-id>:role/<irsa-role-name>
+```
+
+### With Prometheus ServiceMonitor
+
+```bash
+helm install eks-ami-operator ./charts/eks-ami-operator \
+  --namespace eks-ami-operator-system \
+  --create-namespace \
+  --set image.repository=ghcr.io/harshvijaythakkar/eks-ami-operator \
+  --set image.tag={{ template "chart.appVersion" . }} \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.labels.release=prometheus-stack
+```
+
+### Upgrade
+
+```bash
+helm upgrade eks-ami-operator ./charts/eks-ami-operator \
+  --namespace eks-ami-operator-system \
+  --reuse-values \
+  --set image.tag=<new-tag>
+```
+
+### Uninstall
+
+```bash
+helm uninstall eks-ami-operator --namespace eks-ami-operator-system
+```
+
+> Note: The CRD is installed separately via the `crds/` directory and is not removed on uninstall.
+> To remove the CRD: `kubectl delete crd nodegroupupgradepolicies.eks.aws.harsh.dev`
+
+## Quick start
+
+Once the operator is running, create a `NodeGroupUpgradePolicy` to manage a node group:
+
+```yaml
+apiVersion: eks.aws.harsh.dev/v1alpha1
+kind: NodeGroupUpgradePolicy
+metadata:
+  name: my-nodegroup
+  namespace: eks-ami-operator-system
+spec:
+  region: us-east-1
+  clusterName: my-eks-cluster
+  nodeGroupName: my-managed-nodegroup
+  checkInterval: 24h
+  autoUpgrade: false   # set to true to enable automatic upgrades
+```
+
+```bash
+kubectl apply -f policy.yaml
+kubectl get nodegroupupgradepolicies -n eks-ami-operator-system
+kubectl describe nodegroupupgradepolicy my-nodegroup -n eks-ami-operator-system
+```
+
+## Webhook
+
+The admission webhook registers two handlers:
+
+- **Mutating** (`/mutate-eks-aws-harsh-dev-v1alpha1-nodegroupupgradepolicy`) — applies defaults (`checkInterval: 24h`, `scheduleTimezone: UTC`)
+- **Validating** (`/validate-eks-aws-harsh-dev-v1alpha1-nodegroupupgradepolicy`) — validates required fields, cron expressions, IANA timezones, and blocks changes to immutable fields
+
+The API server requires HTTPS for all webhook calls. The chart supports two TLS modes:
+
+### Self-signed (default, no cert-manager required)
+
+The chart generates a self-signed CA and certificate via Helm and stores them in a Secret. On upgrades, the existing Secret is reused so the certificate is not rotated unnecessarily.
+
+```bash
+helm install eks-ami-operator ./charts/eks-ami-operator \
+  --set webhook.enabled=true   # default
+```
+
+### cert-manager
+
+If cert-manager is installed, set `webhook.certManager.enabled=true`. The chart creates a self-signed `Issuer` and a `Certificate`. cert-manager provisions the Secret and injects the CA bundle into both webhook configurations automatically.
+
+```bash
+helm install eks-ami-operator ./charts/eks-ami-operator \
+  --set webhook.certManager.enabled=true
+```
+
+### Disable webhook (local development)
+
+```bash
+helm install eks-ami-operator ./charts/eks-ami-operator \
+  --set webhook.enabled=false
+```
+
+When disabled, `ENABLE_WEBHOOKS=false` is set on the container and no webhook resources are created. Field defaulting and validation will not be enforced on admission.
+
+## Metrics
+
+When `metrics.enabled=true` (default), the operator exposes Prometheus metrics on port `8080` at `/metrics`.
+
+To scrape metrics with the Prometheus operator, enable the ServiceMonitor:
+
+```bash
+--set serviceMonitor.enabled=true
+--set serviceMonitor.labels.release=<your-prometheus-release-label>
+```
+
+{{ template "chart.valuesSection" . }}
+
+{{ template "chart.maintainersSection" . }}
+
+{{ template "chart.sourcesSection" . }}
+
+## License
+
+Apache License 2.0. See [LICENSE](https://github.com/harshvijaythakkar/eks-ami-operator/blob/main/LICENSE).

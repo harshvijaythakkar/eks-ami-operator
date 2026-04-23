@@ -1,0 +1,182 @@
+{{- if .Values.rbac.create }}
+---
+# ClusterRole: read/write access to NodeGroupUpgradePolicy CRD across all namespaces
+# Permissions sourced from kubebuilder markers in internal/controller/nodegroupupgradepolicy_controller.go
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-manager
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - eks.aws.harsh.dev
+    resources:
+      - nodegroupupgradepolicies
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - eks.aws.harsh.dev
+    resources:
+      - nodegroupupgradepolicies/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - eks.aws.harsh.dev
+    resources:
+      - nodegroupupgradepolicies/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+---
+# ClusterRoleBinding: bind manager ClusterRole to the operator ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-manager
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "eks-ami-operator.fullname" . }}-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "eks-ami-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# Role: leader election — manage leases in the operator namespace
+# Sourced from config/rbac/leader_election_role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+---
+# RoleBinding: bind leader election Role to the operator ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "eks-ami-operator.fullname" . }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "eks-ami-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.manager.metricsSecure }}
+---
+# ClusterRole: metrics auth — required when --metrics-secure is set.
+# Allows the operator to authenticate and authorize incoming metrics requests
+# via TokenReview and SubjectAccessReview.
+# Sourced from config/rbac/metrics_auth_role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-metrics-auth
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
+---
+# ClusterRoleBinding: bind metrics-auth ClusterRole to the operator ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-metrics-auth
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "eks-ami-operator.fullname" . }}-metrics-auth
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "eks-ami-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.metrics.enabled }}
+---
+# ClusterRole: metrics reader — allows Prometheus or other scrapers to GET /metrics.
+# Sourced from config/rbac/metrics_reader_role.yaml
+# Bind this to your Prometheus ServiceAccount:
+#   kubectl create clusterrolebinding eks-ami-operator-metrics-reader \
+#     --clusterrole=<release-name>-eks-ami-operator-metrics-reader \
+#     --serviceaccount=<prometheus-namespace>:<prometheus-serviceaccount>
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-metrics-reader
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+rules:
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get
+{{- end }}
+{{- end }}

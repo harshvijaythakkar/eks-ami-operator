@@ -5,5 +5,11 @@ metadata:
     app.kubernetes.io/name: eks-ami-operator
     app.kubernetes.io/managed-by: kustomize
   name: nodegroupupgradepolicy-sample
+  namespace: eks-ami-operator-system
 spec:
-  # TODO(user): Add fields here
+  region: us-east-1
+  clusterName: my-eks-cluster
+  nodeGroupName: my-managed-nodegroup
+  checkInterval: 24h
+  autoUpgrade: false
+  paused: false

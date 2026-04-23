@@ -1,0 +1,82 @@
+{{- if .Values.webhook.enabled }}
+{{- $caBundle := "" }}
+{{- if not .Values.webhook.certManager.enabled }}
+{{- $tls := include "eks-ami-operator.webhookTLS" . | fromYaml }}
+{{- $caBundle = $tls.ca }}
+{{- end }}
+---
+# MutatingWebhookConfiguration: handles defaulting (sets checkInterval, scheduleTimezone defaults)
+# Path: /mutate-eks-aws-harsh-dev-v1alpha1-nodegroupupgradepolicy
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-mutating-webhook
+  {{- if .Values.webhook.certManager.enabled }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "eks-ami-operator.fullname" . }}-serving-cert
+  {{- end }}
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+webhooks:
+  - name: mnodegroupupgradepolicy-v1alpha1.kb.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: {{ include "eks-ami-operator.fullname" . }}-webhook-service
+        namespace: {{ .Release.Namespace }}
+        path: /mutate-eks-aws-harsh-dev-v1alpha1-nodegroupupgradepolicy
+      {{- if not .Values.webhook.certManager.enabled }}
+      caBundle: {{ $caBundle }}
+      {{- end }}
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    rules:
+      - apiGroups:
+          - eks.aws.harsh.dev
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - nodegroupupgradepolicies
+    sideEffects: None
+---
+# ValidatingWebhookConfiguration: handles validation (required fields, cron, timezone, region)
+# Path: /validate-eks-aws-harsh-dev-v1alpha1-nodegroupupgradepolicy
+# Sourced from config/webhook/manifests.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-validating-webhook
+  {{- if .Values.webhook.certManager.enabled }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "eks-ami-operator.fullname" . }}-serving-cert
+  {{- end }}
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+webhooks:
+  - name: vnodegroupupgradepolicy-v1alpha1.kb.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: {{ include "eks-ami-operator.fullname" . }}-webhook-service
+        namespace: {{ .Release.Namespace }}
+        path: /validate-eks-aws-harsh-dev-v1alpha1-nodegroupupgradepolicy
+      {{- if not .Values.webhook.certManager.enabled }}
+      caBundle: {{ $caBundle }}
+      {{- end }}
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    rules:
+      - apiGroups:
+          - eks.aws.harsh.dev
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - nodegroupupgradepolicies
+    sideEffects: None
+{{- end }}

@@ -1,0 +1,42 @@
+eks-ami-operator has been deployed to namespace {{ .Release.Namespace }}.
+
+Check the operator pod:
+
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "eks-ami-operator.name" . }}
+
+Once the pod is running, create a NodeGroupUpgradePolicy to start managing a node group:
+
+  kubectl apply -f - <<EOF
+  apiVersion: eks.aws.harsh.dev/v1alpha1
+  kind: NodeGroupUpgradePolicy
+  metadata:
+    name: my-nodegroup
+    namespace: {{ .Release.Namespace }}
+  spec:
+    region: us-east-1
+    clusterName: my-eks-cluster
+    nodeGroupName: my-managed-nodegroup
+    checkInterval: 24h
+    autoUpgrade: false
+  EOF
+
+Check status:
+
+  kubectl get nodegroupupgradepolicies -n {{ .Release.Namespace }}
+  kubectl describe nodegroupupgradepolicy my-nodegroup -n {{ .Release.Namespace }}
+{{- if .Values.serviceMonitor.enabled }}
+
+A Prometheus ServiceMonitor has been created. Make sure your Prometheus operator
+is configured to select ServiceMonitors with these labels:
+{{- range $k, $v := .Values.serviceMonitor.labels }}
+  {{ $k }}: {{ $v }}
+{{- end }}
+{{- end }}
+{{- if not .Values.webhook.enabled }}
+
+NOTE: The admission webhook is disabled (ENABLE_WEBHOOKS=false).
+Field validation and defaulting will not be enforced on admission.
+To enable it, set webhook.enabled=true and configure TLS certificates.
+{{- end }}
+
+Documentation: https://github.com/harshvijaythakkar/eks-ami-operator
