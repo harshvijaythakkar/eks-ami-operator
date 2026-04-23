@@ -733,8 +733,28 @@ make manifests
 
 ### Build and push the image
 
+Single-arch (current platform only):
+
 ```bash
 make docker-build docker-push IMG=<registry>/eks-ami-operator:<tag>
+```
+
+Multi-arch (linux/amd64 + linux/arm64):
+
+```bash
+make docker-buildx IMG=<registry>/eks-ami-operator:<tag>
+```
+
+The `docker-buildx` target creates a `docker-container` buildx builder named `eks-ami-operator-builder` on first use and reuses it on subsequent runs. In CI, if your pipeline already sets up a buildx builder (e.g. via `docker/setup-buildx-action`), pass its name to avoid creating a duplicate:
+
+```bash
+make docker-buildx IMG=<registry>/eks-ami-operator:<tag> BUILDX_BUILDER=<ci-builder-name>
+```
+
+To build for different platforms:
+
+```bash
+make docker-buildx IMG=<registry>/eks-ami-operator:<tag> PLATFORMS=linux/amd64,linux/arm64,linux/s390x
 ```
 
 ### Helm chart development

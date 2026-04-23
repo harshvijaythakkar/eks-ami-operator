@@ -123,22 +123,38 @@ docker-build: ## Build docker image with the manager.
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
 
-# PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
-# architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
-# - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
-# - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-# - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
-# To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
-PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
+# Target platforms for multi-arch builds.
+# Default covers the two most common architectures. Override as needed:
+#   make docker-buildx IMG=myregistry/eks-ami-operator:v1.0.0 PLATFORMS=linux/amd64,linux/arm64
+PLATFORMS ?= linux/amd64,linux/arm64
+
+# Buildx builder name.
+BUILDX_BUILDER ?= eks-ami-operator-builder
+
 .PHONY: docker-buildx
-docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
-	- $(CONTAINER_TOOL) buildx create --name eks-ami-operator-builder
-	$(CONTAINER_TOOL) buildx use eks-ami-operator-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
-	- $(CONTAINER_TOOL) buildx rm eks-ami-operator-builder
-	rm Dockerfile.cross
+docker-buildx: ## Build and push a multi-arch image (linux/amd64 + linux/arm64 by default).
+	# Insert --platform=${BUILDPLATFORM} into the first FROM stage so the builder
+	# stage compiles natively on the build host (faster cross-compilation).
+	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' \
+	    -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' \
+	    Dockerfile > Dockerfile.cross
+	# Create the buildx builder only if it does not already exist.
+	# --driver docker-container supports multi-arch; --bootstrap ensures it is ready.
+	$(CONTAINER_TOOL) buildx inspect $(BUILDX_BUILDER) > /dev/null 2>&1 || \
+		$(CONTAINER_TOOL) buildx create \
+			--name $(BUILDX_BUILDER) \
+			--driver docker-container \
+			--bootstrap
+	# Build and push. --builder targets the named builder without changing the
+	# global default, so this is safe to run in parallel CI jobs.
+	$(CONTAINER_TOOL) buildx build \
+		--builder $(BUILDX_BUILDER) \
+		--push \
+		--platform=$(PLATFORMS) \
+		--tag ${IMG} \
+		-f Dockerfile.cross \
+		.
+	rm -f Dockerfile.cross
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
