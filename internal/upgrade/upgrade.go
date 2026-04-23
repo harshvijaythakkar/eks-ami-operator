@@ -5,10 +5,6 @@ import (
 	"strings"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
-
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	eksTypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
@@ -16,6 +12,9 @@ import (
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/awsutils"
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/metrics"
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/scheduler"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -25,6 +24,12 @@ const (
 	UpgradeStatusOutdated   = "Outdated"
 	UpgradeStatusSkipped    = "Skipped"
 )
+
+// --- logger adapter so helpers don’t import logf again ---
+type logrLogger interface {
+	Info(msg string, keysAndValues ...any)
+	Error(err error, msg string, keysAndValues ...any)
+}
 
 // func ProcessUpgrade(ctx context.Context, c client.Client, policy *eksv1alpha1.NodeGroupUpgradePolicy, currentRelease, latestRelease string, eksClient *eks.Client) error {
 // 	logger := logf.FromContext(ctx)
@@ -69,89 +74,125 @@ const (
 // 	return c.Status().Update(ctx, policy)
 // }
 
+// ProcessUpgrade performs three steps:
+//
+//  1. update common status fields + base metrics
+//  2. if in-flight => poll DescribeUpdate and set terminal status when done
+//  3. if not in-flight => decide compliant/outdated and possibly initiate an update
 func ProcessUpgrade(ctx context.Context, c client.Client, policy *eksv1alpha1.NodeGroupUpgradePolicy, currentRelease, latestRelease string, eksClient *eks.Client) error {
 	logger := logf.FromContext(ctx)
 
-	now := float64(time.Now().Unix())
-	metrics.LastCheckedTimestamp.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(now)
+	// Always update "last checked" metrics / status
+	nowUnix := float64(time.Now().Unix())
+	metrics.LastCheckedTimestamp.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(nowUnix)
 
-	// Keep these fresh each reconcile
 	policy.Status.LastChecked = metav1.Now()
 	policy.Status.CurrentAmi = currentRelease
 	policy.Status.TargetAmi = latestRelease
 
-	// If nothing else happens, lifecycle is "idle" by default for this run; we'll override below as needed.
+	// Default lifecycle state for this run unless overridden below.
 	metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "idle").Set(1)
 	metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
 
-	// 1) If an update is already in-flight, poll DescribeUpdate
-	if policy.Status.UpgradeStatus == UpgradeStatusInProgress && policy.Status.UpdateID != "" {
-		outcome, derr := awsutils.DescribeNodegroupUpdate(ctx, eksClient, policy.Spec.ClusterName, policy.Spec.NodeGroupName, policy.Status.UpdateID)
-		if derr != nil {
-			// Transient read issue; persist the time and keep InProgress
-			logger.Error(derr, "DescribeUpdate failed; keeping InProgress", "updateID", policy.Status.UpdateID)
-			// Keep lifecycle as in_progress to reflect real state, inflight timer since LastUpgradeAttempt
-			if !policy.Status.LastUpgradeAttempt.IsZero() {
-				secs := time.Since(policy.Status.LastUpgradeAttempt.Time).Seconds()
-				metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(secs)
-			}
-			metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "in_progress").Set(1)
-			return c.Status().Update(ctx, policy)
-		}
-		policy.Status.UpdateStatus = string(outcome.Status)
-		policy.Status.LastProgressCheck = metav1.Now()
-
-		switch outcome.Status {
-		case eksTypes.UpdateStatusInProgress:
-			// Keep polling on subsequent reconciles
-			logger.Info("Managed nodegroup update still InProgress", "updateID", outcome.ID)
-			if !policy.Status.LastUpgradeAttempt.IsZero() {
-				secs := time.Since(policy.Status.LastUpgradeAttempt.Time).Seconds()
-				metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(secs)
-			}
-			metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "in_progress").Set(1)
-			return c.Status().Update(ctx, policy)
-		case eksTypes.UpdateStatusSuccessful:
-			// Terminal success → mark Succeeded and compliant
-			policy.Status.UpgradeStatus = UpgradeStatusSucceeded
-			policy.Status.UpdateErrors = nil
-			metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(1)
-			logger.Info("Managed nodegroup update completed Successfully", "updateID", outcome.ID)
-			metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "successful").Set(1)
-			metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
-			return c.Status().Update(ctx, policy)
-		case eksTypes.UpdateStatusFailed, eksTypes.UpdateStatusCancelled:
-			// Terminal failure → capture all AWS errors generically
-			policy.Status.UpgradeStatus = UpgradeStatusFailed
-			policy.Status.UpdateErrors = outcome.Errors
-			metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
-			metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "failed").Inc()
-			logger.Info("Managed nodegroup update Failed or Cancelled", "updateID", outcome.ID, "status", outcome.Status, "errors", strings.Join(outcome.Errors, "; "))
-			if outcome.Status == eksTypes.UpdateStatusCancelled {
-				metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "cancelled").Set(1)
-			} else {
-				metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "failed").Set(1)
-			}
-			metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
-			return c.Status().Update(ctx, policy)
-		default:
-			// Unexpected/rare states → preserve InProgress but record last seen status
-			logger.Info("Managed nodegroup update in unexpected state", "updateID", outcome.ID, "status", outcome.Status)
-			metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "in_progress").Set(1)
-			if !policy.Status.LastUpgradeAttempt.IsZero() {
-				secs := time.Since(policy.Status.LastUpgradeAttempt.Time).Seconds()
-				metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(secs)
-			}
-			return c.Status().Update(ctx, policy)
-		}
+	// 1) If update already in-flight: track it and return.
+	if handled, err := trackInFlightUpdate(ctx, c, policy, eksClient, logger); handled {
+		return err
 	}
 
-	// 2) No in-flight update → decide compliant vs initiation
+	// 2) Otherwise decide compliance / initiate update if needed.
+	return handleNotInFlight(ctx, c, policy, currentRelease, latestRelease, eksClient, logger)
+}
+
+func trackInFlightUpdate(ctx context.Context, c client.Client, policy *eksv1alpha1.NodeGroupUpgradePolicy, eksClient *eks.Client, logger logrLogger) (bool, error) {
+	if policy.Status.UpgradeStatus != UpgradeStatusInProgress || policy.Status.UpdateID == "" {
+		return false, nil
+	}
+
+	outcome, derr := awsutils.DescribeNodegroupUpdate(ctx, eksClient, policy.Spec.ClusterName, policy.Spec.NodeGroupName, policy.Status.UpdateID)
+	if derr != nil {
+		// transient read issue; keep InProgress and let controller short-poll again
+		logger.Error(derr, "DescribeUpdate failed; keeping InProgress", "updateID", policy.Status.UpdateID)
+
+		metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "in_progress").Set(1)
+		if !policy.Status.LastUpgradeAttempt.IsZero() {
+			secs := time.Since(policy.Status.LastUpgradeAttempt.Time).Seconds()
+			metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(secs)
+		}
+		return true, c.Status().Update(ctx, policy)
+	}
+
+	// Persist what EKS reports
+	policy.Status.UpdateStatus = string(outcome.Status)
+	policy.Status.LastProgressCheck = metav1.Now()
+
+	switch outcome.Status {
+	case eksTypes.UpdateStatusInProgress:
+		logger.Info("Managed nodegroup update still InProgress", "updateID", outcome.ID)
+
+		metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "in_progress").Set(1)
+		if !policy.Status.LastUpgradeAttempt.IsZero() {
+			secs := time.Since(policy.Status.LastUpgradeAttempt.Time).Seconds()
+			metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(secs)
+		}
+		return true, c.Status().Update(ctx, policy)
+
+	case eksTypes.UpdateStatusSuccessful:
+		// Terminal success
+		policy.Status.UpgradeStatus = UpgradeStatusSucceeded
+		policy.Status.UpdateErrors = nil
+
+		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(1)
+		metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "successful").Set(1)
+		metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
+
+		logger.Info("Managed nodegroup update completed Successfully", "updateID", outcome.ID)
+		return true, c.Status().Update(ctx, policy)
+
+	case eksTypes.UpdateStatusFailed:
+		return true, setTerminalFailure(ctx, c, policy, outcome, "failed", logger)
+
+	case eksTypes.UpdateStatusCancelled:
+		return true, setTerminalFailure(ctx, c, policy, outcome, "cancelled", logger)
+
+	default:
+		// Unknown/rare status -> treat as still in progress for safety
+		logger.Info("Managed nodegroup update in unexpected state",
+			"updateID", outcome.ID, "status", outcome.Status)
+
+		metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "in_progress").Set(1)
+		if !policy.Status.LastUpgradeAttempt.IsZero() {
+			secs := time.Since(policy.Status.LastUpgradeAttempt.Time).Seconds()
+			metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(secs)
+		}
+		return true, c.Status().Update(ctx, policy)
+	}
+}
+
+func setTerminalFailure(ctx context.Context, c client.Client, policy *eksv1alpha1.NodeGroupUpgradePolicy, outcome *awsutils.UpdateOutcome, lifecycleStatus string, logger logrLogger) error {
+	policy.Status.UpgradeStatus = UpgradeStatusFailed
+	policy.Status.UpdateErrors = outcome.Errors
+
+	metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
+	metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "failed").Inc()
+
+	metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, lifecycleStatus).Set(1)
+	metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
+
+	logger.Info("Managed nodegroup update terminal failure", "updateID", outcome.ID, "status", outcome.Status, "errors", strings.Join(outcome.Errors, "; "))
+
+	return c.Status().Update(ctx, policy)
+}
+
+func handleNotInFlight(ctx context.Context, c client.Client, policy *eksv1alpha1.NodeGroupUpgradePolicy, currentRelease string, latestRelease string, eksClient *eks.Client, logger logrLogger) error {
+	// Compliant
 	if currentRelease == latestRelease {
-		// Compliant
 		policy.Status.UpgradeStatus = UpgradeStatusSucceeded
 		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(1)
 		metrics.OutdatedNodeGroups.WithLabelValues(policy.Spec.ClusterName).Set(0)
+
+		metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "idle").Set(1)
+		metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
+
 		return c.Status().Update(ctx, policy)
 	}
 
@@ -159,9 +200,8 @@ func ProcessUpgrade(ctx context.Context, c client.Client, policy *eksv1alpha1.No
 	logger.Info("Nodegroup is outdated", "current", currentRelease, "latest", latestRelease)
 	metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
 	metrics.OutdatedNodeGroups.WithLabelValues(policy.Spec.ClusterName).Inc()
-	metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "idle").Set(1)
-	metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
 
+	// Auto-upgrade disabled -> skipped
 	if !policy.Spec.AutoUpgrade {
 		policy.Status.UpgradeStatus = UpgradeStatusSkipped
 		metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "skipped").Inc()
@@ -170,49 +210,53 @@ func ProcessUpgrade(ctx context.Context, c client.Client, policy *eksv1alpha1.No
 		return c.Status().Update(ctx, policy)
 	}
 
-	// Initiate managed nodegroup update to the resolved release
+	// Initiate update to exact resolved release version
 	upd, uerr := eksClient.UpdateNodegroupVersion(ctx, &eks.UpdateNodegroupVersionInput{
-		ClusterName:    &policy.Spec.ClusterName,
-		NodegroupName:  &policy.Spec.NodeGroupName,
-		ReleaseVersion: &latestRelease, // target exact AMI release (official API supports this)
+		ClusterName:    aws.String(policy.Spec.ClusterName),
+		NodegroupName:  aws.String(policy.Spec.NodeGroupName),
+		ReleaseVersion: aws.String(latestRelease),
 	})
 	policy.Status.LastUpgradeAttempt = metav1.Now()
+
 	if uerr != nil {
 		policy.Status.UpgradeStatus = UpgradeStatusFailed
 		metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "failed").Inc()
-		logger.Error(uerr, "UpdateNodegroupVersion failed to initiate")
+
 		metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "failed").Set(1)
 		metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
+
+		logger.Error(uerr, "UpdateNodegroupVersion failed to initiate")
 		return c.Status().Update(ctx, policy)
 	}
 
-	// Initiation OK → record UpdateID and mark InProgress
+	// Initiation OK -> record UpdateID and mark InProgress
 	policy.Status.UpgradeStatus = UpgradeStatusInProgress
 	policy.Status.UpdateID = aws.ToString(upd.Update.Id)
-	policy.Status.UpdateStatus = "InProgress"
+	policy.Status.UpdateStatus = string(eksTypes.UpdateStatusInProgress)
+
 	metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "success").Inc()
 	logger.Info("Managed nodegroup update initiated", "updateID", policy.Status.UpdateID, "targetRelease", latestRelease)
 	metrics.UpdateStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "in_progress").Set(1)
 	metrics.UpdateInflightSeconds.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
 
-	// stamp the *next* cron window now so status doesn't point at the boundary we just ran ---
-	{
-		// Nudge beyond late tolerance (5s) so NextRun returns the next occurrence, not "run now"
-		now := time.Now()
-		nudge := now.Add(6 * time.Second)
-		delay, reason, _ := scheduler.NextRun(nudge, &policy.Status.LastChecked, policy)
-		switch reason {
-		case scheduler.ReasonCron:
-			if delay > 0 {
-				policy.Status.NextScheduledTime = metav1.NewTime(now.Add(delay))
-			}
-		case scheduler.ReasonInterval:
-			// Defensive fallback: for valid cron we don't expect this branch
-			if delay > 0 {
-				policy.Status.NextScheduledTime = metav1.NewTime(now.Add(delay))
-			}
-		}
-	}
+	logger.Info("Managed nodegroup update initiated",
+		"updateID", policy.Status.UpdateID, "targetRelease", latestRelease)
+
+	// Option A: stamp nextScheduledTime to the next cron window (so it doesn't point at the boundary we just ran)
+	stampNextCronWindow(policy)
 
 	return c.Status().Update(ctx, policy)
+}
+
+func stampNextCronWindow(policy *eksv1alpha1.NodeGroupUpgradePolicy) {
+	// Only meaningful if cron is configured
+	if strings.TrimSpace(policy.Spec.ScheduleCron) == "" {
+		return
+	}
+	now := time.Now()
+	nudge := now.Add(6 * time.Second) // beyond late tolerance in scheduler.NextRun
+	delay, reason, _ := scheduler.NextRun(nudge, &policy.Status.LastChecked, policy)
+	if reason == scheduler.ReasonCron && delay > 0 {
+		policy.Status.NextScheduledTime = metav1.NewTime(now.Add(delay))
+	}
 }
