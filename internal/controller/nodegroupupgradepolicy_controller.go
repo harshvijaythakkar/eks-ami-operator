@@ -21,27 +21,22 @@ import (
 	"errors"
 	"time"
 
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	// "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
-
 	"github.com/aws/aws-sdk-go-v2/aws"
-	// "github.com/aws/aws-sdk-go-v2/service/eks"
-
+	"github.com/aws/aws-sdk-go-v2/service/eks"
 	eksv1alpha1 "github.com/harshvijaythakkar/eks-ami-operator/api/v1alpha1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/awsutils"
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/finalizer"
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/metrics"
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/scheduler"
 	"github.com/harshvijaythakkar/eks-ami-operator/internal/upgrade"
 	"github.com/harshvijaythakkar/eks-ami-operator/pkg/awsclient"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 // NodeGroupUpgradePolicyReconciler reconciles a NodeGroupUpgradePolicy object
@@ -90,111 +85,56 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{}, err
 	}
 
-	// Hard guards: paused / startAfter / min upgrade interval
-	skip, requeueAfter, err := scheduler.ShouldSkip(&policy)
-	if err != nil {
-		// ShouldSkip errored -> compute cron-aware next delay anyway
-		nd := r.computeNextDelay(ctx, &policy)
-		logger.Error(err, "scheduler.ShouldSkip returned error; requeueing via schedule",
-			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
-		return ctrl.Result{RequeueAfter: nd}, err
+	// Hard guards
+	if res, err := r.handleGuards(ctx, &policy); res != nil {
+		return *res, err
 	}
 
-	if skip {
-		// Respect skip decision (e.g., startAfter future); jitter to avoid herd
-		jittered := scheduler.Jitter(requeueAfter)
-		logger.Info("Skipping due to scheduling guard (paused/startAfter/minInterval)",
-			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", jittered)
-		return ctrl.Result{RequeueAfter: jittered}, nil
+	// Schedule gating (skip gating while update is in-flight)
+	if res := r.handleScheduleGate(ctx, &policy); res != nil {
+		return *res, nil
 	}
 
-	// Cron/interval decision — if not due, exit early without AWS work (with proper logging)
-	// if nd, due := r.whenToRunNext(ctx, &policy); !due {
-	// 	return ctrl.Result{RequeueAfter: nd}, nil
-	// }
-
-	// Skip schedule gating while an EKS update is in-flight (so we poll progress now).
-	if policy.Status.UpgradeStatus != upgrade.UpgradeStatusInProgress || policy.Status.UpdateID == "" {
-		if nd, due := r.whenToRunNext(ctx, &policy); !due {
-			return ctrl.Result{RequeueAfter: nd}, nil
-		}
-	}
-
-	// Due now: proceed with logic
 	// AWS clients
-	clients, err := getAWSClients(ctx, policy.Spec.Region)
+	clients, res, err := r.getClientsOrRequeue(ctx, &policy)
+	if res != nil {
+		return *res, err
+	}
 	if err != nil {
-		if policy.Status.UpgradeStatus == upgrade.UpgradeStatusInProgress && policy.Status.UpdateID != "" {
-			logger.Error(err, "AWS client creation failed; short requeue while update in-flight",
-				"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
-			return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
-		}
-		nd := r.computeNextDelay(ctx, &policy)
-		logger.Error(err, "AWS client creation failed; requeueing via schedule",
-			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
-		return ctrl.Result{RequeueAfter: nd}, err
+		return ctrl.Result{}, err
 	}
 
-	// Describe the node group to get current AMI and other metadata
-	ngOutput, err := awsutils.DescribeNodegroup(ctx, clients.EKS, policy.Spec.ClusterName, policy.Spec.NodeGroupName)
+	// Describe nodegroup
+	ngOutput, res, err := r.describeNodegroupOrRequeue(ctx, &policy, clients)
+	if res != nil {
+		return *res, err
+	}
 	if err != nil {
-		if policy.Status.UpgradeStatus == upgrade.UpgradeStatusInProgress && policy.Status.UpdateID != "" {
-			logger.Error(err, "DescribeNodegroup failed; short requeue while update in-flight",
-				"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
-			return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
-		}
-		nd := r.computeNextDelay(ctx, &policy)
-		logger.Error(err, "DescribeNodegroup failed; requeueing via schedule",
-			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
-		return ctrl.Result{RequeueAfter: nd}, nil
+		return ctrl.Result{}, err
 	}
 
-	// Extract current AMI type (for managed node groups, this is usually an enum like AL2_x86_64)
+	// Metadata
 	amiType := ngOutput.Nodegroup.AmiType
 	releaseVersion := aws.ToString(ngOutput.Nodegroup.ReleaseVersion)
 	logger.Info("Nodegroup metadata", "amiType", amiType, "releaseVersion", releaseVersion)
 
-	// Fetch latest recommended AMI for the cluster version
-	eksVersion, err := awsutils.DescribeCluster(ctx, clients.EKS, policy.Spec.ClusterName)
+	// Cluster version
+	eksVersion, res, err := r.describeClusterOrRequeue(ctx, &policy, clients)
+	if res != nil {
+		return *res, err
+	}
 	if err != nil {
-		nd := r.computeNextDelay(ctx, &policy)
-		logger.Error(err, "DescribeCluster failed; requeueing via schedule",
-			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
-		return ctrl.Result{RequeueAfter: nd}, err
+		return ctrl.Result{}, err
 	}
 
-	latestAmi, latestReleaseVersion, err := awsutils.ResolveLatestAMI(ctx, clients.SSM, ngOutput.Nodegroup.AmiType, eksVersion)
-	if err != nil {
-		if errors.Is(err, awsutils.ErrAL2UnsupportedOnCluster) {
-			logger.Info("AL2 AMI not published for this EKS version; migration to AL2023 is required",
-				"cluster", policy.Spec.ClusterName,
-				"nodegroup", policy.Spec.NodeGroupName,
-				"eksVersion", eksVersion,
-				"amiType", ngOutput.Nodegroup.AmiType,
-			)
-
-			// Surface clear conditions & metrics
-			policy.Status.UpgradeStatus = "Skipped"
-			SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UnsupportedAMI",
-				"AL2 AMI is not available for this EKS version; create a new node group on AL2023 and migrate.")
-			SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UnsupportedAMI",
-				"AL2 AMI not published for this EKS version.")
-			metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
-			metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "skipped").Inc()
-
-			// Persist and requeue per schedule (not an error)
-			_ = r.Status().Update(ctx, &policy)
-			nd := r.computeNextDelay(ctx, &policy)
-			return ctrl.Result{RequeueAfter: nd}, nil
-		}
-
-		// Other errors -> normal schedule requeue
-		nd := r.computeNextDelay(ctx, &policy)
-		logger.Error(err, "ResolveLatestAMI failed; requeueing via schedule",
-			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
-		return ctrl.Result{RequeueAfter: nd}, nil
+	// Resolve latest AMI (or unsupported)
+	latestAmi, latestReleaseVersion, res, err := r.resolveLatestOrRequeue(ctx, &policy, clients, ngOutput, eksVersion)
+	if res != nil {
+		return *res, err
 	}
-
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	logger.Info("Fetched latest AMI metadata", "latestAmi", latestAmi, "latestReleaseVersion", latestReleaseVersion)
 
 	// now := float64(time.Now().Unix())
@@ -230,7 +170,7 @@ func (r *NodeGroupUpgradePolicyReconciler) Reconcile(ctx context.Context, req ct
 	// While an update is in-flight, poll more frequently (e.g., every 2 minutes).
 	// When ProcessUpgrade flips to terminal (Succeeded/Failed/Skipped), this condition becomes false
 	// and we fall back to normal cron/interval requeue below.
-	if policy.Status.UpgradeStatus == upgrade.UpgradeStatusInProgress && policy.Status.UpdateID != "" {
+	if r.isInFlight(&policy) {
 		logger.Info("Upgrade in progress; short requeue for progress polling", "cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
 		return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
 	}
@@ -281,6 +221,10 @@ func (r *NodeGroupUpgradePolicyReconciler) SetupWithManager(mgr ctrl.Manager) er
 // getAWSClients creates AWS clients for EKS and SSM using the region from the CRD.
 func getAWSClients(ctx context.Context, region string) (*awsclient.AWSClients, error) {
 	return awsclient.NewAWSClients(ctx, region)
+}
+
+func (r *NodeGroupUpgradePolicyReconciler) isInFlight(policy *eksv1alpha1.NodeGroupUpgradePolicy) bool {
+    return policy.Status.UpgradeStatus == upgrade.UpgradeStatusInProgress && policy.Status.UpdateID != ""
 }
 
 // func (r *NodeGroupUpgradePolicyReconciler) handleFinalizer(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, finalizerName string) (bool, error) {
@@ -365,6 +309,141 @@ func getAWSClients(ctx context.Context, region string) (*awsclient.AWSClients, e
 
 // 	return r.Status().Update(ctx, policy)
 // }
+
+func (r *NodeGroupUpgradePolicyReconciler) handleGuards(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy) (*ctrl.Result, error) {
+	logger := logf.FromContext(ctx)
+
+	skip, requeueAfter, err := scheduler.ShouldSkip(policy)
+	if err != nil {
+		nd := r.computeNextDelay(ctx, policy)
+		logger.Error(err, "scheduler.ShouldSkip returned error; requeueing via schedule",
+			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
+		res := ctrl.Result{RequeueAfter: nd}
+		return &res, err
+	}
+
+	if skip {
+		jittered := scheduler.Jitter(requeueAfter)
+		logger.Info("Skipping due to scheduling guard (paused/startAfter/minInterval)",
+			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", jittered)
+		res := ctrl.Result{RequeueAfter: jittered}
+		return &res, nil
+	}
+
+	return nil, nil
+}
+
+func (r *NodeGroupUpgradePolicyReconciler) handleScheduleGate(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy) *ctrl.Result {
+	// Skip schedule gating while an EKS update is in-flight (so we poll progress now).
+	if r.isInFlight(policy) {
+		return nil
+	}
+
+	if nd, due := r.whenToRunNext(ctx, policy); !due {
+		res := ctrl.Result{RequeueAfter: nd}
+		return &res
+	}
+	return nil
+}
+
+func (r *NodeGroupUpgradePolicyReconciler) getClientsOrRequeue(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy) (*awsclient.AWSClients, *ctrl.Result, error) {
+	logger := logf.FromContext(ctx)
+
+	clients, err := getAWSClients(ctx, policy.Spec.Region)
+	if err == nil {
+		return clients, nil, nil
+	}
+
+	// Short poll while in-flight
+	if r.isInFlight(policy) {
+		logger.Error(err, "AWS client creation failed; short requeue while update in-flight",
+			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
+		res := ctrl.Result{RequeueAfter: 2 * time.Minute}
+		return nil, &res, nil
+	}
+
+	nd := r.computeNextDelay(ctx, policy)
+	logger.Error(err, "AWS client creation failed; requeueing via schedule",
+		"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
+	res := ctrl.Result{RequeueAfter: nd}
+	return nil, &res, err
+}
+
+func (r *NodeGroupUpgradePolicyReconciler) describeNodegroupOrRequeue(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, clients *awsclient.AWSClients) (*eks.DescribeNodegroupOutput, *ctrl.Result, error) {
+	logger := logf.FromContext(ctx)
+
+	ngOutput, err := awsutils.DescribeNodegroup(ctx, clients.EKS, policy.Spec.ClusterName, policy.Spec.NodeGroupName)
+	if err == nil {
+		return ngOutput, nil, nil
+	}
+
+	if r.isInFlight(policy) {
+		logger.Error(err, "DescribeNodegroup failed; short requeue while update in-flight",
+			"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName)
+		res := ctrl.Result{RequeueAfter: 2 * time.Minute}
+		return nil, &res, nil
+	}
+
+	nd := r.computeNextDelay(ctx, policy)
+	logger.Error(err, "DescribeNodegroup failed; requeueing via schedule",
+		"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
+	res := ctrl.Result{RequeueAfter: nd}
+	return nil, &res, nil
+}
+
+func (r *NodeGroupUpgradePolicyReconciler) describeClusterOrRequeue(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, clients *awsclient.AWSClients) (string, *ctrl.Result, error) {
+	logger := logf.FromContext(ctx)
+
+	eksVersion, err := awsutils.DescribeCluster(ctx, clients.EKS, policy.Spec.ClusterName)
+	if err == nil {
+		return eksVersion, nil, nil
+	}
+
+	nd := r.computeNextDelay(ctx, policy)
+	logger.Error(err, "DescribeCluster failed; requeueing via schedule",
+		"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
+	res := ctrl.Result{RequeueAfter: nd}
+	return "", &res, err
+}
+
+func (r *NodeGroupUpgradePolicyReconciler) resolveLatestOrRequeue(ctx context.Context, policy *eksv1alpha1.NodeGroupUpgradePolicy, clients *awsclient.AWSClients, ngOutput *eks.DescribeNodegroupOutput, eksVersion string) (string, string, *ctrl.Result, error) {
+	logger := logf.FromContext(ctx)
+
+	latestAmi, latestReleaseVersion, err := awsutils.ResolveLatestAMI(ctx, clients.SSM, ngOutput.Nodegroup.AmiType, eksVersion)
+	if err == nil {
+		return latestAmi, latestReleaseVersion, nil, nil
+	}
+
+	// Unsupported AL2 on newer minors
+	if errors.Is(err, awsutils.ErrAL2UnsupportedOnCluster) {
+		logger.Info("AL2 AMI not published for this EKS version; migration to AL2023 is required",
+			"cluster", policy.Spec.ClusterName,
+			"nodegroup", policy.Spec.NodeGroupName,
+			"eksVersion", eksVersion,
+			"amiType", ngOutput.Nodegroup.AmiType,
+		)
+
+		policy.Status.UpgradeStatus = upgrade.UpgradeStatusSkipped
+		SetUpgradeCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UnsupportedAMI",
+			"AL2 AMI is not available for this EKS version; create a new node group on AL2023 and migrate.")
+		SetAMIComplianceCondition(&policy.Status.Conditions, metav1.ConditionFalse, "UnsupportedAMI",
+			"AL2 AMI not published for this EKS version.")
+		metrics.ComplianceStatus.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName).Set(0)
+		metrics.UpgradeAttempts.WithLabelValues(policy.Spec.ClusterName, policy.Spec.NodeGroupName, "skipped").Inc()
+
+		_ = r.Status().Update(ctx, policy)
+		nd := r.computeNextDelay(ctx, policy)
+		res := ctrl.Result{RequeueAfter: nd}
+		return "", "", &res, nil
+	}
+
+	// Other errors -> normal schedule requeue
+	nd := r.computeNextDelay(ctx, policy)
+	logger.Error(err, "ResolveLatestAMI failed; requeueing via schedule",
+		"cluster", policy.Spec.ClusterName, "nodegroup", policy.Spec.NodeGroupName, "requeueAfter", nd)
+	res := ctrl.Result{RequeueAfter: nd}
+	return "", "", &res, nil
+}
 
 // whenToRunNext computes the next delay and returns (delay, dueNow bool).
 // If dueNow = false -> it logs reason, sets metrics, updates status (best-effort), and returns the delay.
