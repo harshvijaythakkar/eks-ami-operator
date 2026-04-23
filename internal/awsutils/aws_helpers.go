@@ -9,14 +9,13 @@ import (
 	"strings"
 	"time"
 
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
-
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/eks/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/smithy-go"
 	"github.com/cenkalti/backoff/v4"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // package-level RNG, seeded once
@@ -33,7 +32,7 @@ var ErrAL2UnsupportedOnCluster = errors.New("al2 ami not published for this eks 
 // UpdateOutcome is a generic view of an EKS update lifecycle state.
 type UpdateOutcome struct {
 	ID        string
-	Status    types.UpdateStatus // typed: InProgress | Successful | Failed | Cancelled
+	Status    types.UpdateStatus // InProgress | Successful | Failed | Cancelled
 	Errors    []string           // "<code>: <message>" pairs
 	CreatedAt *time.Time
 	Type      string // e.g., "VersionUpdate"
@@ -55,61 +54,72 @@ func DescribeCluster(ctx context.Context, eksClient *eks.Client, clusterName str
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimPrefix(*clusterOutput.Cluster.Version, "v"), nil
+	return strings.TrimPrefix(aws.ToString(clusterOutput.Cluster.Version), "v"), nil
 }
 
 // ResolveLatestAMI builds SSM path based on AMI type + EKS version, and returns (imageID, releaseVersion).
 func ResolveLatestAMI(ctx context.Context, ssmClient *ssm.Client, amiType types.AMITypes, eksVersion string) (string, string, error) {
-	var ssmPath string
-	isAL2 := amiType == types.AMITypesAl2X8664 || amiType == types.AMITypesAl2Arm64
-	minor, _ := eksMinor(eksVersion) // best-effort; if parse fails, minor == 0 and guards below won’t trigger
+	minor, _ := eksMinor(eksVersion) // best-effort; if parse fails, minor == 0
 
 	// Guard: AL2 is not published for newer EKS minors (e.g., >= 1.33).
-	if isAL2 && minor >= AL2UnsupportedMinorCutoff {
+	if isAL2(amiType) && minor >= AL2UnsupportedMinorCutoff {
 		return "", "", ErrAL2UnsupportedOnCluster
 	}
 
-	switch amiType {
-	case "AL2_x86_64":
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion)
-	case "AL2_ARM_64":
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2-arm64/recommended", eksVersion)
-	case "AL2023_x86_64_STANDARD":
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended", eksVersion)
-	case "AL2023_ARM_64_STANDARD":
-		ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/arm64/standard/recommended", eksVersion)
-	case "CUSTOM":
+	ssmPath, isCustom := buildSSMPath(amiType, eksVersion, minor)
+	if isCustom {
 		return "", "", nil
-	default:
-		// Default path: for older minors (< cutoff), AL2; for newer minors (>= cutoff), prefer AL2023 x86_64 standard.
-		if minor >= AL2UnsupportedMinorCutoff {
-			ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended", eksVersion)
-		} else {
-			ssmPath = fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion)
-		}
 	}
 
-	ssmInput := &ssm.GetParameterInput{
-		Name:           &ssmPath,
+	ssmOutput, err := retryGetParameter(ctx, ssmClient, &ssm.GetParameterInput{
+		Name:           aws.String(ssmPath),
 		WithDecryption: aws.Bool(false),
-	}
-	ssmOutput, err := retryGetParameter(ctx, ssmClient, ssmInput)
+	})
 	if err != nil {
 		// If SSM returns ParameterNotFound and we're requesting AL2 for a newer minor, map to sentinel error.
 		var apiErr smithy.APIError
 		if errors.As(err, &apiErr) && apiErr.ErrorCode() == "ParameterNotFound" {
-			if isAL2 && minor >= AL2UnsupportedMinorCutoff {
+			if isAL2(amiType) && minor >= AL2UnsupportedMinorCutoff {
 				return "", "", ErrAL2UnsupportedOnCluster
 			}
 		}
 		return "", "", err
 	}
 
+	return parseRecommendedAMI(aws.ToString(ssmOutput.Parameter.Value))
+}
+
+// buildSSMPath returns the recommended SSM parameter path for the given AMI type + EKS version.
+// It also returns isCustom=true when AMI type is CUSTOM.
+func buildSSMPath(amiType types.AMITypes, eksVersion string, minor int) (path string, isCustom bool) {
+	v := strings.ToUpper(string(amiType))
+
+	switch v {
+	case "AL2_X86_64":
+		return fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion), false
+	case "AL2_ARM_64":
+		return fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2-arm64/recommended", eksVersion), false
+	case "AL2023_X86_64_STANDARD":
+		return fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended", eksVersion), false
+	case "AL2023_ARM_64_STANDARD":
+		return fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/arm64/standard/recommended", eksVersion), false
+	case "CUSTOM":
+		return "", true
+	default:
+		// Default path: for older minors (< cutoff), AL2; for newer minors (>= cutoff), prefer AL2023 x86_64 standard.
+		if minor >= AL2UnsupportedMinorCutoff {
+			return fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended", eksVersion), false
+		}
+		return fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2/recommended", eksVersion), false
+	}
+}
+
+func parseRecommendedAMI(raw string) (string, string, error) {
 	var amiMetadata struct {
 		ImageID        string `json:"image_id"`
 		ReleaseVersion string `json:"release_version"`
 	}
-	if err := json.Unmarshal([]byte(*ssmOutput.Parameter.Value), &amiMetadata); err != nil {
+	if err := json.Unmarshal([]byte(raw), &amiMetadata); err != nil {
 		return "", "", err
 	}
 
@@ -171,6 +181,11 @@ func ResolveLatestAMI(ctx context.Context, ssmClient *ssm.Client, amiType types.
 // 	return output, err
 // }
 
+func isAL2(amiType types.AMITypes) bool {
+	v := strings.ToUpper(string(amiType))
+	return v == "AL2_X86_64" || v == "AL2_ARM_64"
+}
+
 // --- Retry helpers with jittered backoff ---
 func retryDescribeNodegroup(ctx context.Context, eksClient *eks.Client, input *eks.DescribeNodegroupInput) (*eks.DescribeNodegroupOutput, error) {
 	var output *eks.DescribeNodegroupOutput
@@ -184,7 +199,9 @@ func retryDescribeNodegroup(ctx context.Context, eksClient *eks.Client, input *e
 				switch apiErr.ErrorCode() {
 				case "ResourceNotFoundException", "InvalidParameterException":
 					logf.FromContext(ctx).Error(err, "Permanent error during DescribeNodegroup, skipping retries",
-						"errorCode", apiErr.ErrorCode(), "clusterName", *input.ClusterName, "nodegroupName", *input.NodegroupName)
+						"errorCode", apiErr.ErrorCode(),
+						"clusterName", aws.ToString(input.ClusterName),
+						"nodegroupName", aws.ToString(input.NodegroupName))
 					return backoff.Permanent(err)
 				}
 			}
@@ -208,7 +225,8 @@ func retryGetParameter(ctx context.Context, ssmClient *ssm.Client, input *ssm.Ge
 				switch apiErr.ErrorCode() {
 				case "ParameterNotFound", "InvalidParameter":
 					logf.FromContext(ctx).Error(err, "Permanent error during GetParameter, skipping retries",
-						"errorCode", apiErr.ErrorCode(), "parameterName", *input.Name)
+						"errorCode", apiErr.ErrorCode(),
+						"parameterName", aws.ToString(input.Name))
 					return backoff.Permanent(err)
 				}
 			}
@@ -240,7 +258,8 @@ func DescribeNodegroupUpdate(ctx context.Context, eksClient *eks.Client, cluster
 		return nil, err
 	}
 	u := out.Update
-	// var errs []string
+
+	// prealloc to satisfy prealloc linter
 	errs := make([]string, 0, len(u.Errors))
 	for _, e := range u.Errors {
 		code := strings.TrimSpace(string(e.ErrorCode))
