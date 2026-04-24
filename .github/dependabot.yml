@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # Keep Go module dependencies up to date
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - go
+    groups:
+      aws-sdk:
+        patterns:
+          - "github.com/aws/*"
+      kubernetes:
+        patterns:
+          - "sigs.k8s.io/*"
+          - "k8s.io/*"
+
+  # Keep GitHub Actions up to date
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - github-actions

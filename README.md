@@ -1,6 +1,18 @@
 # eks-ami-operator
 
 <p align="center">
+  <a href="https://github.com/harshvijaythakkar/eks-ami-operator/actions/workflows/lint.yml">
+    <img src="https://github.com/harshvijaythakkar/eks-ami-operator/actions/workflows/lint.yml/badge.svg" alt="Lint">
+  </a>
+  <a href="https://github.com/harshvijaythakkar/eks-ami-operator/actions/workflows/test.yml">
+    <img src="https://github.com/harshvijaythakkar/eks-ami-operator/actions/workflows/test.yml/badge.svg" alt="Tests">
+  </a>
+  <a href="https://github.com/harshvijaythakkar/eks-ami-operator/actions/workflows/security.yml">
+    <img src="https://github.com/harshvijaythakkar/eks-ami-operator/actions/workflows/security.yml/badge.svg" alt="Security">
+  </a>
+  <a href="https://github.com/harshvijaythakkar/eks-ami-operator/releases/latest">
+    <img src="https://img.shields.io/github/v/release/harshvijaythakkar/eks-ami-operator" alt="Latest Release">
+  </a>
   <a href="https://goreportcard.com/report/github.com/harshvijaythakkar/eks-ami-operator">
     <img src="https://goreportcard.com/badge/github.com/harshvijaythakkar/eks-ami-operator" alt="Go Report Card">
   </a>
@@ -159,35 +171,42 @@ NodeGroupUpgradePolicy CR
 
 ## Installation
 
+Both the container image and Helm chart are published to GHCR. No separate registry setup is needed.
+
+| Artifact | Location |
+|---|---|
+| Container image | `ghcr.io/harshvijaythakkar/eks-ami-operator:<tag>` |
+| Helm chart (OCI) | `oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator` |
+
 ### Basic install
 
 ```bash
-helm install eks-ami-operator ./charts/eks-ami-operator \
+helm install eks-ami-operator \
+  oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator \
+  --version <tag> \
   --namespace eks-ami-operator-system \
-  --create-namespace \
-  --set image.repository=ghcr.io/harshvijaythakkar/eks-ami-operator \
-  --set image.tag=<tag>
+  --create-namespace
 ```
 
 ### With IRSA (recommended for production)
 
 ```bash
-helm install eks-ami-operator ./charts/eks-ami-operator \
+helm install eks-ami-operator \
+  oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator \
+  --version <tag> \
   --namespace eks-ami-operator-system \
   --create-namespace \
-  --set image.repository=ghcr.io/harshvijaythakkar/eks-ami-operator \
-  --set image.tag=<tag> \
   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::<account-id>:role/<irsa-role-name>
 ```
 
 ### With Prometheus ServiceMonitor
 
 ```bash
-helm install eks-ami-operator ./charts/eks-ami-operator \
+helm install eks-ami-operator \
+  oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator \
+  --version <tag> \
   --namespace eks-ami-operator-system \
   --create-namespace \
-  --set image.repository=ghcr.io/harshvijaythakkar/eks-ami-operator \
-  --set image.tag=<tag> \
   --set serviceMonitor.enabled=true \
   --set serviceMonitor.labels.release=prometheus-stack
 ```
