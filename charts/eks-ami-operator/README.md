@@ -30,35 +30,42 @@ IRSA (IAM Roles for Service Accounts) is strongly recommended over static creden
 
 ## Installation
 
+Both the container image and Helm chart are published to GHCR. No separate registry setup is needed.
+
+| Artifact | Location |
+|---|---|
+| Container image | `ghcr.io/harshvijaythakkar/eks-ami-operator:v0.1.0` |
+| Helm chart (OCI) | `oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator` |
+
 ### Basic install
 
 ```bash
-helm install eks-ami-operator ./charts/eks-ami-operator \
+helm install eks-ami-operator \
+  oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator \
+  --version v0.1.0 \
   --namespace eks-ami-operator-system \
-  --create-namespace \
-  --set image.repository=ghcr.io/harshvijaythakkar/eks-ami-operator \
-  --set image.tag=v0.1.0
+  --create-namespace
 ```
 
 ### With IRSA (recommended for production)
 
 ```bash
-helm install eks-ami-operator ./charts/eks-ami-operator \
+helm install eks-ami-operator \
+  oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator \
+  --version v0.1.0 \
   --namespace eks-ami-operator-system \
   --create-namespace \
-  --set image.repository=ghcr.io/harshvijaythakkar/eks-ami-operator \
-  --set image.tag=v0.1.0 \
   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::<account-id>:role/<irsa-role-name>
 ```
 
 ### With Prometheus ServiceMonitor
 
 ```bash
-helm install eks-ami-operator ./charts/eks-ami-operator \
+helm install eks-ami-operator \
+  oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator \
+  --version v0.1.0 \
   --namespace eks-ami-operator-system \
   --create-namespace \
-  --set image.repository=ghcr.io/harshvijaythakkar/eks-ami-operator \
-  --set image.tag=v0.1.0 \
   --set serviceMonitor.enabled=true \
   --set serviceMonitor.labels.release=prometheus-stack
 ```
@@ -66,10 +73,11 @@ helm install eks-ami-operator ./charts/eks-ami-operator \
 ### Upgrade
 
 ```bash
-helm upgrade eks-ami-operator ./charts/eks-ami-operator \
+helm upgrade eks-ami-operator \
+  oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator \
+  --version <new-version> \
   --namespace eks-ami-operator-system \
-  --reuse-values \
-  --set image.tag=<new-tag>
+  --reuse-values
 ```
 
 ### Uninstall
@@ -157,6 +165,7 @@ To scrape metrics with the Prometheus operator, enable the ServiceMonitor:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | affinity | object | `{}` | Affinity rules for the operator Pod. |
+| commonAnnotations | object | `{}` | Annotations added to every resource created by this chart. Users can add any annotations here — cost tracking, team ownership, compliance tags, etc. Example:   cost-center: platform-team   owner: ops@example.com |
 | extraEnv | list | `[]` | Extra environment variables injected into the manager container. |
 | extraVolumeMounts | list | `[]` | Extra volume mounts added to the manager container. |
 | extraVolumes | list | `[]` | Extra volumes added to the Pod. |

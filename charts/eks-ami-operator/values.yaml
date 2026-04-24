@@ -31,6 +31,13 @@ serviceAccount:
   # -- Disable automatic token mounting (recommended).
   automountServiceAccountToken: false
 
+# -- Annotations added to every resource created by this chart.
+# Users can add any annotations here — cost tracking, team ownership, compliance tags, etc.
+# Example:
+#   cost-center: platform-team
+#   owner: ops@example.com
+commonAnnotations: {}
+
 rbac:
   # -- Create RBAC resources (ClusterRole, ClusterRoleBinding, Role, RoleBinding).
   create: true

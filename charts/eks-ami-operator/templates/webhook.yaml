@@ -11,10 +11,13 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
   name: {{ include "eks-ami-operator.fullname" . }}-mutating-webhook
-  {{- if .Values.webhook.certManager.enabled }}
   annotations:
+    {{- if .Values.webhook.certManager.enabled }}
     cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "eks-ami-operator.fullname" . }}-serving-cert
-  {{- end }}
+    {{- end }}
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
   labels:
     {{- include "eks-ami-operator.labels" . | nindent 4 }}
 webhooks:
@@ -49,10 +52,13 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   name: {{ include "eks-ami-operator.fullname" . }}-validating-webhook
-  {{- if .Values.webhook.certManager.enabled }}
   annotations:
+    {{- if .Values.webhook.certManager.enabled }}
     cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "eks-ami-operator.fullname" . }}-serving-cert
-  {{- end }}
+    {{- end }}
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
   labels:
     {{- include "eks-ami-operator.labels" . | nindent 4 }}
 webhooks:

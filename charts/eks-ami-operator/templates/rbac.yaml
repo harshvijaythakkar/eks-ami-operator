@@ -8,6 +8,10 @@ metadata:
   name: {{ include "eks-ami-operator.fullname" . }}-manager
   labels:
     {{- include "eks-ami-operator.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 rules:
   - apiGroups:
       - eks.aws.harsh.dev
@@ -50,6 +54,10 @@ metadata:
   name: {{ include "eks-ami-operator.fullname" . }}-manager
   labels:
     {{- include "eks-ami-operator.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -68,6 +76,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "eks-ami-operator.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 rules:
   - apiGroups:
       - ""
@@ -109,6 +121,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "eks-ami-operator.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -129,6 +145,10 @@ metadata:
   name: {{ include "eks-ami-operator.fullname" . }}-metrics-auth
   labels:
     {{- include "eks-ami-operator.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 rules:
   - apiGroups:
       - authentication.k8s.io
@@ -150,6 +170,10 @@ metadata:
   name: {{ include "eks-ami-operator.fullname" . }}-metrics-auth
   labels:
     {{- include "eks-ami-operator.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -173,10 +197,106 @@ metadata:
   name: {{ include "eks-ami-operator.fullname" . }}-metrics-reader
   labels:
     {{- include "eks-ami-operator.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 rules:
   - nonResourceURLs:
       - /metrics
     verbs:
       - get
 {{- end }}
+---
+# ClusterRole: admin access to NodeGroupUpgradePolicy resources.
+# Aggregates to the built-in cluster-admin role.
+# Sourced from config/rbac/nodegroupupgradepolicy_admin_role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-nodegroupupgradepolicy-admin
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+rules:
+  - apiGroups:
+      - eks.aws.harsh.dev
+    resources:
+      - nodegroupupgradepolicies
+    verbs:
+      - '*'
+  - apiGroups:
+      - eks.aws.harsh.dev
+    resources:
+      - nodegroupupgradepolicies/status
+    verbs:
+      - get
+---
+# ClusterRole: editor access to NodeGroupUpgradePolicy resources.
+# Aggregates to the built-in edit role.
+# Sourced from config/rbac/nodegroupupgradepolicy_editor_role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-nodegroupupgradepolicy-editor
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+rules:
+  - apiGroups:
+      - eks.aws.harsh.dev
+    resources:
+      - nodegroupupgradepolicies
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - eks.aws.harsh.dev
+    resources:
+      - nodegroupupgradepolicies/status
+    verbs:
+      - get
+---
+# ClusterRole: viewer (read-only) access to NodeGroupUpgradePolicy resources.
+# Aggregates to the built-in view role.
+# Sourced from config/rbac/nodegroupupgradepolicy_viewer_role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-nodegroupupgradepolicy-viewer
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+rules:
+  - apiGroups:
+      - eks.aws.harsh.dev
+    resources:
+      - nodegroupupgradepolicies
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - eks.aws.harsh.dev
+    resources:
+      - nodegroupupgradepolicies/status
+    verbs:
+      - get
 {{- end }}

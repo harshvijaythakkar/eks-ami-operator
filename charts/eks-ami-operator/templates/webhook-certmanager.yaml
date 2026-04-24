@@ -1,4 +1,4 @@
-{{- if and .Values.webhook.enabled .Values.webhook.certManager.enabled }}
+{{- if .Values.webhook.certManager.enabled }}
 ---
 # Self-signed Issuer used to sign the webhook serving certificate
 apiVersion: cert-manager.io/v1
@@ -8,6 +8,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "eks-ami-operator.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   selfSigned: {}
 ---
@@ -22,6 +26,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "eks-ami-operator.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   dnsNames:
     - {{ include "eks-ami-operator.fullname" . }}-webhook-service.{{ .Release.Namespace }}.svc
@@ -30,4 +38,28 @@ spec:
     kind: Issuer
     name: {{ include "eks-ami-operator.fullname" . }}-selfsigned-issuer
   secretName: {{ include "eks-ami-operator.webhookTLSSecretName" . }}
+{{- if .Values.manager.metricsSecure }}
+---
+# Certificate for the metrics server TLS (when manager.metricsSecure=true)
+# Sourced from config/certmanager/certificate-metrics.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "eks-ami-operator.fullname" . }}-metrics-certs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "eks-ami-operator.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  dnsNames:
+    - {{ include "eks-ami-operator.fullname" . }}-metrics.{{ .Release.Namespace }}.svc
+    - {{ include "eks-ami-operator.fullname" . }}-metrics.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: {{ include "eks-ami-operator.fullname" . }}-selfsigned-issuer
+  secretName: {{ include "eks-ami-operator.fullname" . }}-metrics-certs
+{{- end }}
 {{- end }}

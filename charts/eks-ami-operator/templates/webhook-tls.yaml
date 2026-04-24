@@ -12,6 +12,9 @@ metadata:
     # It is preserved across upgrades via lookup — the cert is only regenerated
     # if the secret does not already exist.
     helm.sh/resource-policy: keep
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 type: kubernetes.io/tls
 data:
   ca.crt: {{ $tls.ca }}
