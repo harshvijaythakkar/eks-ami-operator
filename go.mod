@@ -5,10 +5,10 @@ go 1.24.5
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.6
 	github.com/aws/aws-sdk-go-v2/config v1.32.16
-	github.com/aws/aws-sdk-go-v2/service/ec2 v1.257.2
+	github.com/aws/aws-sdk-go-v2/service/ec2 v1.299.0
 	github.com/aws/aws-sdk-go-v2/service/eks v1.82.1
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.68.5
-	github.com/aws/smithy-go v1.25.0
+	github.com/aws/smithy-go v1.25.1
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/onsi/gomega v1.39.1
