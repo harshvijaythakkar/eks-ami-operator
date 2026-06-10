@@ -41,7 +41,6 @@ spec:
 {{- if .Values.manager.metricsSecure }}
 ---
 # Certificate for the metrics server TLS (when manager.metricsSecure=true)
-# Sourced from config/certmanager/certificate-metrics.yaml
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:

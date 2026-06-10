@@ -1,7 +1,6 @@
 {{- if .Values.rbac.create }}
 ---
 # ClusterRole: read/write access to NodeGroupUpgradePolicy CRD across all namespaces
-# Permissions sourced from kubebuilder markers in internal/controller/nodegroupupgradepolicy_controller.go
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -67,8 +66,7 @@ subjects:
     name: {{ include "eks-ami-operator.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 ---
-# Role: leader election — manage leases in the operator namespace
-# Sourced from config/rbac/leader_election_role.yaml
+# Role: leader election, manages leases in the operator namespace
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -135,10 +133,8 @@ subjects:
     namespace: {{ .Release.Namespace }}
 {{- if .Values.manager.metricsSecure }}
 ---
-# ClusterRole: metrics auth — required when --metrics-secure is set.
-# Allows the operator to authenticate and authorize incoming metrics requests
-# via TokenReview and SubjectAccessReview.
-# Sourced from config/rbac/metrics_auth_role.yaml
+# ClusterRole: metrics auth. Required when --metrics-secure is set.
+# Lets the operator authenticate incoming metrics requests via TokenReview and SubjectAccessReview.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -185,8 +181,7 @@ subjects:
 {{- end }}
 {{- if .Values.metrics.enabled }}
 ---
-# ClusterRole: metrics reader — allows Prometheus or other scrapers to GET /metrics.
-# Sourced from config/rbac/metrics_reader_role.yaml
+# ClusterRole: metrics reader. Allows Prometheus or other scrapers to GET /metrics.
 # Bind this to your Prometheus ServiceAccount:
 #   kubectl create clusterrolebinding eks-ami-operator-metrics-reader \
 #     --clusterrole=<release-name>-eks-ami-operator-metrics-reader \
@@ -210,7 +205,6 @@ rules:
 ---
 # ClusterRole: admin access to NodeGroupUpgradePolicy resources.
 # Aggregates to the built-in cluster-admin role.
-# Sourced from config/rbac/nodegroupupgradepolicy_admin_role.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -238,7 +232,6 @@ rules:
 ---
 # ClusterRole: editor access to NodeGroupUpgradePolicy resources.
 # Aggregates to the built-in edit role.
-# Sourced from config/rbac/nodegroupupgradepolicy_editor_role.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -272,7 +265,6 @@ rules:
 ---
 # ClusterRole: viewer (read-only) access to NodeGroupUpgradePolicy resources.
 # Aggregates to the built-in view role.
-# Sourced from config/rbac/nodegroupupgradepolicy_viewer_role.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

@@ -28,11 +28,11 @@ serviceAccount:
   # Commonly used to attach an IRSA role ARN:
   #   eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/<role-name>
   annotations: {}
-  # -- Disable automatic token mounting (recommended).
+  # -- Disable automatic token mounting.
   automountServiceAccountToken: false
 
 # -- Annotations added to every resource created by this chart.
-# Users can add any annotations here — cost tracking, team ownership, compliance tags, etc.
+# Users can add any annotations here: cost tracking, team ownership, compliance tags, etc.
 # Example:
 #   cost-center: platform-team
 #   owner: ops@example.com
@@ -89,9 +89,6 @@ manager:
   metricsSecure: false
 
 webhook:
-  # -- Enable the admission webhook (defaulting + validation).
-  # Set to false for local development or environments without cert-manager.
-  enabled: true
   # -- Webhook server port.
   port: 9443
   # -- Failure policy for the webhook. Fail means the request is rejected if the webhook is unavailable.

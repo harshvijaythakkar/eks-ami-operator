@@ -1,4 +1,3 @@
-{{- if .Values.webhook.enabled }}
 {{- $caBundle := "" }}
 {{- if not .Values.webhook.certManager.enabled }}
 {{- $tls := include "eks-ami-operator.webhookTLS" . | fromYaml }}
@@ -47,7 +46,6 @@ webhooks:
 ---
 # ValidatingWebhookConfiguration: handles validation (required fields, cron, timezone, region)
 # Path: /validate-eks-aws-harsh-dev-v1alpha1-nodegroupupgradepolicy
-# Sourced from config/webhook/manifests.yaml
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
@@ -85,4 +83,3 @@ webhooks:
         resources:
           - nodegroupupgradepolicies
     sideEffects: None
-{{- end }}

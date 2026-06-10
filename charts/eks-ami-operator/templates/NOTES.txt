@@ -32,11 +32,5 @@ is configured to select ServiceMonitors with these labels:
   {{ $k }}: {{ $v }}
 {{- end }}
 {{- end }}
-{{- if not .Values.webhook.enabled }}
-
-NOTE: The admission webhook is disabled (ENABLE_WEBHOOKS=false).
-Field validation and defaulting will not be enforced on admission.
-To enable it, set webhook.enabled=true and configure TLS certificates.
-{{- end }}
 
 Documentation: https://github.com/harshvijaythakkar/eks-ami-operator

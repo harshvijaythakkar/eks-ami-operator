@@ -50,21 +50,13 @@ spec:
             - --metrics-bind-address={{ .Values.manager.metricsBindAddress }}
             - --health-probe-bind-address={{ .Values.manager.healthProbeBindAddress }}
             - --metrics-secure={{ .Values.manager.metricsSecure }}
-            {{- if .Values.webhook.enabled }}
             - --webhook-cert-path=/etc/webhook/certs
-            {{- end }}
             {{- if .Values.manager.enableHTTP2 }}
             - --enable-http2
             {{- end }}
-          {{- if or (not .Values.webhook.enabled) .Values.extraEnv }}
+          {{- with .Values.extraEnv }}
           env:
-            {{- if not .Values.webhook.enabled }}
-            - name: ENABLE_WEBHOOKS
-              value: "false"
-            {{- end }}
-            {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
-            {{- end }}
           {{- end }}
           ports:
             {{- if .Values.metrics.enabled }}
@@ -75,11 +67,9 @@ spec:
             - name: health
               containerPort: 8081
               protocol: TCP
-            {{- if .Values.webhook.enabled }}
             - name: webhook
               containerPort: {{ .Values.webhook.port }}
               protocol: TCP
-            {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
@@ -93,22 +83,18 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            {{- if .Values.webhook.enabled }}
             - name: webhook-tls
               mountPath: /etc/webhook/certs
               readOnly: true
-            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
-        {{- if .Values.webhook.enabled }}
         - name: webhook-tls
           secret:
             secretName: {{ include "eks-ami-operator.webhookTLSSecretName" . }}
-        {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

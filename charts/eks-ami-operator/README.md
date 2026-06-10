@@ -9,8 +9,8 @@ A Kubernetes operator for automating EKS managed node group AMI upgrades
 
 | Field | Value |
 |---|---|
-| Chart version | `0.1.0` |
-| App version | `v0.1.0` |
+| Chart version | `1.0.0` |
+| App version | `v1.0.0` |
 | Kubernetes | `>=1.16.0-0` |
 | Helm | `v3.0+` |
 
@@ -26,15 +26,15 @@ A Kubernetes operator for automating EKS managed node group AMI upgrades
   - `ssm:GetParameter` on `arn:aws:ssm:<region>:*:parameter/aws/service/eks/*`
   - `ec2:DescribeRegions`
 
-IRSA (IAM Roles for Service Accounts) is strongly recommended over static credentials.
+Use IRSA (IAM Roles for Service Accounts) rather than static credentials.
 
 ## Installation
 
-Both the container image and Helm chart are published to GHCR. No separate registry setup is needed.
+Both the container image and Helm chart are published to GHCR.
 
 | Artifact | Location |
 |---|---|
-| Container image | `ghcr.io/harshvijaythakkar/eks-ami-operator:v0.1.0` |
+| Container image | `ghcr.io/harshvijaythakkar/eks-ami-operator:v1.0.0` |
 | Helm chart (OCI) | `oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator` |
 
 ### Basic install
@@ -42,7 +42,7 @@ Both the container image and Helm chart are published to GHCR. No separate regis
 ```bash
 helm install eks-ami-operator \
   oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator \
-  --version v0.1.0 \
+  --version v1.0.0 \
   --namespace eks-ami-operator-system \
   --create-namespace
 ```
@@ -52,7 +52,7 @@ helm install eks-ami-operator \
 ```bash
 helm install eks-ami-operator \
   oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator \
-  --version v0.1.0 \
+  --version v1.0.0 \
   --namespace eks-ami-operator-system \
   --create-namespace \
   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::<account-id>:role/<irsa-role-name>
@@ -63,7 +63,7 @@ helm install eks-ami-operator \
 ```bash
 helm install eks-ami-operator \
   oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator \
-  --version v0.1.0 \
+  --version v1.0.0 \
   --namespace eks-ami-operator-system \
   --create-namespace \
   --set serviceMonitor.enabled=true \
@@ -86,12 +86,15 @@ helm upgrade eks-ami-operator \
 helm uninstall eks-ami-operator --namespace eks-ami-operator-system
 ```
 
-> Note: The CRD is installed separately via the `crds/` directory and is not removed on uninstall.
-> To remove the CRD: `kubectl delete crd nodegroupupgradepolicies.eks.aws.harsh.dev`
+The CRD lives in the `crds/` directory and is not removed on uninstall. To remove it:
+
+```bash
+kubectl delete crd nodegroupupgradepolicies.eks.aws.harsh.dev
+```
 
 ## Quick start
 
-Once the operator is running, create a `NodeGroupUpgradePolicy` to manage a node group:
+Create a `NodeGroupUpgradePolicy` to start managing a node group:
 
 ```yaml
 apiVersion: eks.aws.harsh.dev/v1alpha1
@@ -115,20 +118,24 @@ kubectl describe nodegroupupgradepolicy my-nodegroup -n eks-ami-operator-system
 
 ## Webhook
 
-The admission webhook registers two handlers:
+The admission webhook is always enabled and cannot be disabled via Helm. It registers two handlers:
 
-- **Mutating** (`/mutate-eks-aws-harsh-dev-v1alpha1-nodegroupupgradepolicy`) — applies defaults (`checkInterval: 24h`, `scheduleTimezone: UTC`)
-- **Validating** (`/validate-eks-aws-harsh-dev-v1alpha1-nodegroupupgradepolicy`) — validates required fields, cron expressions, IANA timezones, and blocks changes to immutable fields
+- Mutating (`/mutate-eks-aws-harsh-dev-v1alpha1-nodegroupupgradepolicy`): applies defaults (`checkInterval: 24h`, `scheduleTimezone: UTC`)
+- Validating (`/validate-eks-aws-harsh-dev-v1alpha1-nodegroupupgradepolicy`): validates required fields, cron expressions, IANA timezones, and enforces immutability of `spec.clusterName`, `spec.nodeGroupName`, and `spec.region`
+
+The webhook is the only thing that prevents those three fields from being changed after a `NodeGroupUpgradePolicy` is created. If they could be changed, the controller would start managing a different node group and could conflict with another CR that already manages it.
 
 The API server requires HTTPS for all webhook calls. The chart supports two TLS modes:
 
 ### Self-signed (default, no cert-manager required)
 
-The chart generates a self-signed CA and certificate via Helm and stores them in a Secret. On upgrades, the existing Secret is reused so the certificate is not rotated unnecessarily.
+The chart generates a self-signed CA and certificate and stores them in a Secret. On upgrades the existing Secret is reused, so the cert doesn't rotate on every `helm upgrade`.
 
 ```bash
-helm install eks-ami-operator ./charts/eks-ami-operator \
-  --set webhook.enabled=true   # default
+helm install eks-ami-operator oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator \
+  --version v1.0.0 \
+  --namespace eks-ami-operator-system \
+  --create-namespace
 ```
 
 ### cert-manager
@@ -136,18 +143,26 @@ helm install eks-ami-operator ./charts/eks-ami-operator \
 If cert-manager is installed, set `webhook.certManager.enabled=true`. The chart creates a self-signed `Issuer` and a `Certificate`. cert-manager provisions the Secret and injects the CA bundle into both webhook configurations automatically.
 
 ```bash
-helm install eks-ami-operator ./charts/eks-ami-operator \
+helm install eks-ami-operator oci://ghcr.io/harshvijaythakkar/charts/eks-ami-operator \
+  --version v1.0.0 \
+  --namespace eks-ami-operator-system \
+  --create-namespace \
   --set webhook.certManager.enabled=true
 ```
 
-### Disable webhook (local development)
+### Local development (without the webhook)
+
+When running the operator locally with `make run`, bypass the webhook by setting `ENABLE_WEBHOOKS` before starting:
 
 ```bash
-helm install eks-ami-operator ./charts/eks-ami-operator \
-  --set webhook.enabled=false
+# Install CRDs into the cluster pointed to by ~/.kube/config
+make install
+
+# Run the operator locally without the webhook server
+ENABLE_WEBHOOKS=false make run
 ```
 
-When disabled, `ENABLE_WEBHOOKS=false` is set on the container and no webhook resources are created. Field defaulting and validation will not be enforced on admission.
+Without the webhook, field defaulting and immutability enforcement are off. That's fine for local development, but don't do this in production.
 
 ## Metrics
 
@@ -165,7 +180,7 @@ To scrape metrics with the Prometheus operator, enable the ServiceMonitor:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | affinity | object | `{}` | Affinity rules for the operator Pod. |
-| commonAnnotations | object | `{}` | Annotations added to every resource created by this chart. Users can add any annotations here — cost tracking, team ownership, compliance tags, etc. Example:   cost-center: platform-team   owner: ops@example.com |
+| commonAnnotations | object | `{}` | Annotations added to every resource created by this chart. Users can add any annotations here: cost tracking, team ownership, compliance tags, etc. Example:   cost-center: platform-team   owner: ops@example.com |
 | extraEnv | list | `[]` | Extra environment variables injected into the manager container. |
 | extraVolumeMounts | list | `[]` | Extra volume mounts added to the manager container. |
 | extraVolumes | list | `[]` | Extra volumes added to the Pod. |
@@ -194,7 +209,7 @@ To scrape metrics with the Prometheus operator, enable the ServiceMonitor:
 | resources | object | `{"limits":{"cpu":"500m","memory":"128Mi"},"requests":{"cpu":"10m","memory":"64Mi"}}` | Resource requests and limits for the manager container. |
 | securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true}` | Container-level security context. |
 | serviceAccount.annotations | object | `{}` | Annotations on the ServiceAccount. Commonly used to attach an IRSA role ARN:   eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/<role-name> |
-| serviceAccount.automountServiceAccountToken | bool | `false` | Disable automatic token mounting (recommended). |
+| serviceAccount.automountServiceAccountToken | bool | `false` | Disable automatic token mounting. |
 | serviceAccount.create | bool | `true` | Create a ServiceAccount for the operator. |
 | serviceAccount.name | string | `""` | ServiceAccount name. Defaults to the release fullname when empty. |
 | serviceMonitor.enabled | bool | `false` | Create a Prometheus ServiceMonitor. |
@@ -204,7 +219,6 @@ To scrape metrics with the Prometheus operator, enable the ServiceMonitor:
 | serviceMonitor.scrapeTimeout | string | `"10s"` | Scrape timeout. |
 | tolerations | list | `[]` | Tolerations for the operator Pod. |
 | webhook.certManager.enabled | bool | `false` | Use cert-manager to provision and rotate webhook TLS certificates. Requires cert-manager to be installed in the cluster. When true, a self-signed Issuer and Certificate are created automatically, and cert-manager injects the CA bundle into the webhook configurations. When false, the chart generates a self-signed certificate via Helm and stores it in a Secret. |
-| webhook.enabled | bool | `true` | Enable the admission webhook (defaulting + validation). Set to false for local development or environments without cert-manager. |
 | webhook.failurePolicy | string | `"Fail"` | Failure policy for the webhook. Fail means the request is rejected if the webhook is unavailable. Use Ignore for a more lenient policy during upgrades. |
 | webhook.port | int | `9443` | Webhook server port. |
 
