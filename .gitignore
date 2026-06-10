@@ -30,4 +30,7 @@ go.work
 charts/*/charts/
 charts/*/tmpcharts/
 
+# generated build artifacts
+dist/
+
 .DS_Store

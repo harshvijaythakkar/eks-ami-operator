@@ -48,11 +48,13 @@ func SetupNodeGroupUpgradePolicyWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-
-// TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
 // NOTE: The 'path' attribute must follow a specific pattern and should not be modified directly here.
 // Modifying the path for an invalid path can cause API server errors; failing to locate the webhook.
+
+// Mutating webhook: applies defaults (checkInterval, scheduleTimezone).
+// +kubebuilder:webhook:path=/mutate-eks-aws-harsh-dev-v1alpha1-nodegroupupgradepolicy,mutating=true,failurePolicy=fail,sideEffects=None,groups=eks.aws.harsh.dev,resources=nodegroupupgradepolicies,verbs=create;update,versions=v1alpha1,name=mnodegroupupgradepolicy-v1alpha1.kb.io,admissionReviewVersions=v1
+
+// Validating webhook: validates required fields, cron expressions, IANA timezones, and immutable fields.
 // +kubebuilder:webhook:path=/validate-eks-aws-harsh-dev-v1alpha1-nodegroupupgradepolicy,mutating=false,failurePolicy=fail,sideEffects=None,groups=eks.aws.harsh.dev,resources=nodegroupupgradepolicies,verbs=create;update,versions=v1alpha1,name=vnodegroupupgradepolicy-v1alpha1.kb.io,admissionReviewVersions=v1
 
 // NodeGroupUpgradePolicyCustomValidator struct is responsible for validating the NodeGroupUpgradePolicy resource
@@ -60,9 +62,7 @@ func SetupNodeGroupUpgradePolicyWebhookWithManager(mgr ctrl.Manager) error {
 //
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as this struct is used only for temporary operations and does not need to be deeply copied.
-type NodeGroupUpgradePolicyCustomValidator struct {
-	// TODO(user): Add more fields as needed for validation
-}
+type NodeGroupUpgradePolicyCustomValidator struct{}
 
 var _ webhook.CustomValidator = &NodeGroupUpgradePolicyCustomValidator{}
 

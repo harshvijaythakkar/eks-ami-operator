@@ -722,6 +722,21 @@ make install
 make run
 ```
 
+### Run locally without the webhook
+
+The webhook requires TLS certificates and a running Kubernetes API server that can reach the webhook server. For local development where this is not practical, set `ENABLE_WEBHOOKS=false` before starting:
+
+```bash
+make install
+ENABLE_WEBHOOKS=false make run
+```
+
+When the webhook is disabled:
+- Field defaulting (`checkInterval`, `scheduleTimezone`) is not applied on admission — set these explicitly in your CR
+- Immutability of `spec.clusterName`, `spec.nodeGroupName`, and `spec.region` is not enforced — be careful not to change these fields on existing CRs
+
+This mode is for **local development only**. The Helm chart always deploys the webhook and it cannot be disabled via chart values.
+
 ### Run tests
 
 ```bash
@@ -953,11 +968,9 @@ aws eks describe-update \
 ```bash
 # Check webhook pod logs
 kubectl logs -n eks-ami-operator-system deployment/eks-ami-operator | grep -i webhook
-
-# Disable webhooks for local development
-export ENABLE_WEBHOOKS=false
-make run
 ```
+
+For local development without a running webhook server, see [Run locally without the webhook](#run-locally-without-the-webhook).
 
 ### Common issues
 
@@ -974,7 +987,7 @@ make run
 ## Roadmap
 
 - [ ] Custom launch template support
-- [ ] Helm chart published to a public registry
+- [ ] Helm chart published to GHCR as an OCI artifact
 - [ ] Global cooldown across nodegroups in a cluster
 - [ ] Dry-run mode (check compliance without upgrading)
 
