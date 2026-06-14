@@ -33,6 +33,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "eks-ami-operator.serviceAccountName" . }}
+      # The operator must authenticate with the Kubernetes API server.
+      # automountServiceAccountToken is false on the ServiceAccount (security default),
+      # so we explicitly enable it here at the pod level only.
+      automountServiceAccountToken: true
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}

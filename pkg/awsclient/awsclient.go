@@ -31,7 +31,7 @@ func NewAWSClients(ctx context.Context, region string) (*AWSClients, error) {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	logger.Info("Successfully loaded AWS config")
+	logger.Info("AWS config initialized (credentials will be fetched on first API call)")
 
 	clients := &AWSClients{
 		EKS: eks.NewFromConfig(cfg),
