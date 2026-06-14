@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"context"
+	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -140,16 +141,23 @@ func init() {
 
 var _ admission.CustomDefaulter = &NodeGroupUpgradePolicy{}
 
-func (r *NodeGroupUpgradePolicy) Default(_ context.Context, _ runtime.Object) error {
-	logf.Log.WithName("nodegroupupgradepolicy-default").Info("Applying defaults", "name", r.Name)
+func (r *NodeGroupUpgradePolicy) Default(_ context.Context, obj runtime.Object) error {
+	policy, ok := obj.(*NodeGroupUpgradePolicy)
+	if !ok {
+		return fmt.Errorf("expected a NodeGroupUpgradePolicy but got %T", obj)
+	}
 
-	if r.Spec.ScheduleCron == "" && r.Spec.CheckInterval == "" {
-		r.Spec.CheckInterval = "24h"
+	logf.Log.WithName("nodegroupupgradepolicy-default").Info("Applying defaults", "name", policy.Name)
+
+	// Default checkInterval to 24h only when no cron schedule is configured
+	if policy.Spec.ScheduleCron == "" && policy.Spec.CheckInterval == "" {
+		policy.Spec.CheckInterval = "24h"
 		logf.Log.WithName("nodegroupupgradepolicy-default").Info("Defaulted CheckInterval to 24h")
 	}
 
-	if r.Spec.ScheduleCron != "" && r.Spec.ScheduleTimezone == "" {
-		r.Spec.ScheduleTimezone = "UTC"
+	// Default scheduleTimezone to UTC when cron is configured but timezone is not set
+	if policy.Spec.ScheduleCron != "" && policy.Spec.ScheduleTimezone == "" {
+		policy.Spec.ScheduleTimezone = "UTC"
 		logf.Log.WithName("nodegroupupgradepolicy-default").Info("Defaulted ScheduleTimezone to UTC")
 	}
 
