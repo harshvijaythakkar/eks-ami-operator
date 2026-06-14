@@ -43,8 +43,8 @@ spec:
               autoUpgrade:
                 type: boolean
               checkInterval:
-                default: 24h
-                description: Optional interval fallback (defaulted to 24h if omitted)
+                description: Optional interval fallback (defaulted to 24h by the webhook
+                  when no scheduleCron is set)
                 type: string
               clusterName:
                 type: string

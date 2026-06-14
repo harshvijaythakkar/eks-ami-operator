@@ -39,10 +39,9 @@ type NodeGroupUpgradePolicySpec struct {
 	NodeGroupName string `json:"nodeGroupName"`
 	Region        string `json:"region"`
 
-	// Optional interval fallback (defaulted to 24h if omitted)
+	// Optional interval fallback (defaulted to 24h by the webhook when no scheduleCron is set)
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:default:="24h"
-	CheckInterval string `json:"checkInterval"`
+	CheckInterval string `json:"checkInterval,omitempty"`
 
 	// +kubebuilder:validation:Optional
 	AutoUpgrade bool `json:"autoUpgrade"`
@@ -149,7 +148,7 @@ func (r *NodeGroupUpgradePolicy) Default(_ context.Context, _ runtime.Object) er
 		logf.Log.WithName("nodegroupupgradepolicy-default").Info("Defaulted CheckInterval to 24h")
 	}
 
-	if r.Spec.ScheduleCron != "" && r.Spec.CheckInterval == "" {
+	if r.Spec.ScheduleCron != "" && r.Spec.ScheduleTimezone == "" {
 		r.Spec.ScheduleTimezone = "UTC"
 		logf.Log.WithName("nodegroupupgradepolicy-default").Info("Defaulted ScheduleTimezone to UTC")
 	}
