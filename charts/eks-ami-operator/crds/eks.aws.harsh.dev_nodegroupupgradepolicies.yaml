@@ -43,6 +43,8 @@ spec:
               autoUpgrade:
                 type: boolean
               checkInterval:
+                description: Optional interval fallback (defaulted to 24h by the webhook
+                  when no scheduleCron is set)
                 type: string
               clusterName:
                 type: string
@@ -52,11 +54,17 @@ spec:
                 type: boolean
               region:
                 type: string
+              scheduleCron:
+                description: 'A standard 5-field cron expression. Example: "0 2 *
+                  * *" (daily at 02:00)'
+                type: string
+              scheduleTimezone:
+                default: UTC
+                description: 'IANA timezone for cron evaluation. Example: "Asia/Kolkata"'
+                type: string
               startAfter:
                 type: string
             required:
-            - autoUpgrade
-            - checkInterval
             - clusterName
             - nodeGroupName
             - region
@@ -138,10 +146,33 @@ spec:
               lastChecked:
                 format: date-time
                 type: string
+              lastProgressCheck:
+                description: LastProgressCheck indicates the last time progress was
+                  polled via DescribeUpdate.
+                format: date-time
+                type: string
+              lastScheduledTime:
+                description: Scheduling observability
+                format: date-time
+                type: string
               lastUpgradeAttempt:
                 format: date-time
                 type: string
+              nextScheduledTime:
+                format: date-time
+                type: string
               targetAmi:
+                type: string
+              updateErrors:
+                description: UpdateErrors contains error code/message pairs from DescribeUpdate
+                  (if any).
+                items:
+                  type: string
+                type: array
+              updateID:
+                type: string
+              updateStatus:
+                description: 'UpdateStatus mirrors DescribeUpdate status: InProgress|Successful|Failed.'
                 type: string
               upgradeStatus:
                 enum:
