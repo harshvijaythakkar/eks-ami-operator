@@ -171,6 +171,8 @@ NodeGroupUpgradePolicy CR
 
 ## Installation
 
+<!-- docker buildx build --push --platform linux/amd64,linux/arm64 -t <repo_url>:<tag> -f Dockerfile.cross . --no-cache --provenance=false --sbom=false -->
+
 Both the container image and Helm chart are published to GHCR. No separate registry setup is needed.
 
 | Artifact | Location |
